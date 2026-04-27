@@ -165,10 +165,12 @@ class OverlayWindow(QMainWindow):
 
     def _on_chatgpt_ready(self, ready: bool) -> None:
         if ready:
-            self._status_label.setText("ChatGPT signed-in session detected.")
+            self._status_label.setText(
+                "ChatGPT logged in — ready to send screenshots."
+            )
         else:
             self._status_label.setText(
-                "ChatGPT not ready — log in via the ChatGPT tab."
+                "ChatGPT not signed in — open the ChatGPT login tab and log in."
             )
 
     def open_settings(self) -> None:

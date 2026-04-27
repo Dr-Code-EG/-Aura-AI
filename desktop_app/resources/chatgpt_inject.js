@@ -166,7 +166,23 @@
     return final;
   };
 
+  function isLoggedOut() {
+    // ChatGPT renders prominent "Log in" / "Sign up" buttons in the top-right
+    // when the visitor is anonymous. When signed in those are replaced by an
+    // avatar / "New chat" controls.
+    const buttons = document.querySelectorAll(
+      'button, a[role="button"], a[href*="/auth/login"]'
+    );
+    for (const b of buttons) {
+      const text = (b.innerText || b.textContent || "").trim().toLowerCase();
+      if (text === "log in" || text === "sign up" || text === "sign up for free") {
+        return true;
+      }
+    }
+    return false;
+  }
+
   window.auraIsReady = function () {
-    return Boolean(findEditor() && findFileInput());
+    return Boolean(findEditor() && findFileInput() && !isLoggedOut());
   };
 })();
