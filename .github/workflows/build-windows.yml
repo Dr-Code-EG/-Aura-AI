@@ -23,6 +23,10 @@ on:
       - "requirements-desktop.txt"
       - ".github/workflows/build-windows.yml"
 
+concurrency:
+  group: build-windows-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     name: Build AuraDesktop.exe
@@ -63,11 +67,17 @@ jobs:
       - name: Bundle as zip
         shell: pwsh
         run: |
-          $version = "${{ github.ref_name }}"
-          if ($version -eq "") { $version = "dev-${{ github.run_number }}" }
-          $zip = "AuraDesktop-windows-$version.zip"
-          Compress-Archive -Path "dist\AuraDesktop\*" -DestinationPath $zip
+          $rawVersion = "$env:GITHUB_REF_NAME"
+          if ([string]::IsNullOrWhiteSpace($rawVersion)) {
+            $rawVersion = "dev-$env:GITHUB_RUN_NUMBER"
+          }
+          # Sanitize slashes / spaces — branch names like devin/1234-foo would
+          # break Compress-Archive's destination path.
+          $version = $rawVersion -replace '[^A-Za-z0-9_.-]', '-'
+          $zip = "AuraDesktop-windows-$($version).zip"
+          Compress-Archive -Path "dist\AuraDesktop\*" -DestinationPath $zip -Force
           "ZIP_NAME=$zip" | Out-File -FilePath $env:GITHUB_ENV -Append
+          Write-Host "Built artifact: $zip"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -87,11 +97,13 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Publish rolling pre-release (default branch)
+      - name: Publish rolling pre-release (default branch / feature branch pushes)
         if: |
-          (github.ref == 'refs/heads/main' ||
-           github.ref == 'refs/heads/master' ||
-           startsWith(github.ref_name, 'devin/'))
+          github.event_name == 'push' && (
+            github.ref == 'refs/heads/main' ||
+            github.ref == 'refs/heads/master' ||
+            startsWith(github.ref_name, 'devin/')
+          )
         uses: softprops/action-gh-release@v2
         with:
           tag_name: latest-windows
