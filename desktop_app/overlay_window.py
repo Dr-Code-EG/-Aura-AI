@@ -44,6 +44,8 @@ class OverlayWindow(QMainWindow):
         self._settings = settings
         self._gemini_thread = None  # keep refs alive while running
         self._gemini_worker = None
+        self._chatgpt_in_flight = False
+        self._chatgpt_watchdog: Optional[QTimer] = None
 
         self.setWindowTitle("Aura Desktop")
         self.resize(QSize(820, 560))
@@ -235,19 +237,56 @@ class OverlayWindow(QMainWindow):
                 )
                 return
             self._status_label.setText("Sending screenshot to ChatGPT…")
+            self._chatgpt_in_flight = True
+            self._start_chatgpt_watchdog()
             self._chatgpt.send_screenshot(
                 shot.png_bytes,
                 self._settings.extra_question or "Answer the question on screen.",
             )
-            # ChatGPT path doesn't use _gemini_thread; re-enable controls
-            # once the response arrives via _show_final_response, but also
-            # re-enable here as a safety net so the user isn't stuck if
-            # ChatGPT silently fails.
         else:
             self._send_to_gemini(shot.png_bytes)
 
+    def _start_chatgpt_watchdog(self) -> None:
+        """Re-enable the answer controls if ChatGPT never calls back.
+
+        The injected JS bridge is supposed to emit ``final_response`` or
+        ``error_occurred`` for every screenshot we send. If the page
+        crashes, navigates away, or OpenAI changes their DOM, neither
+        signal fires and the user would be stuck with disabled controls.
+        This watchdog forces a recovery after a generous timeout.
+        """
+        self._stop_chatgpt_watchdog()
+        timer = QTimer(self)
+        timer.setSingleShot(True)
+        timer.setInterval(180_000)  # 3 minutes — generous for slow models
+        timer.timeout.connect(self._on_chatgpt_watchdog_fired)
+        timer.start()
+        self._chatgpt_watchdog = timer
+
+    def _stop_chatgpt_watchdog(self) -> None:
+        timer = self._chatgpt_watchdog
+        if timer is None:
+            return
+        try:
+            timer.stop()
+        except RuntimeError:
+            pass
+        self._chatgpt_watchdog = None
+
+    def _on_chatgpt_watchdog_fired(self) -> None:
+        if not self._chatgpt_in_flight:
+            return
+        self._chatgpt_in_flight = False
+        self._stop_chatgpt_watchdog()
+        self._set_answer_controls_enabled(True)
+        self._status_label.setText(
+            "ChatGPT didn't respond \u2014 try again or reload the ChatGPT tab."
+        )
+
     def _is_request_in_flight(self) -> bool:
-        """True while a Gemini QThread is still running."""
+        """True while a Gemini QThread is still running OR a ChatGPT bridge call is pending."""
+        if self._chatgpt_in_flight:
+            return True
         thread = self._gemini_thread
         if thread is None:
             return False
@@ -307,11 +346,15 @@ class OverlayWindow(QMainWindow):
         self._response_view.setPlainText(text or "(empty response)")
         self._status_label.setText("Done.")
         self._set_answer_controls_enabled(True)
+        self._chatgpt_in_flight = False
+        self._stop_chatgpt_watchdog()
         self._cleanup_gemini_thread()
 
     def _show_error(self, message: str) -> None:
         self._set_answer_controls_enabled(True)
         self._status_label.setText("Error.")
+        self._chatgpt_in_flight = False
+        self._stop_chatgpt_watchdog()
         self._cleanup_gemini_thread()
         QMessageBox.warning(self, "Aura Desktop", message)
 
