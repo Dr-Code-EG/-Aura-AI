@@ -191,10 +191,21 @@ class OverlayWindow(QMainWindow):
 
     # ------------------------------------------------------------------ core
     def trigger_answer(self) -> None:
-        """Called by both the toolbar button and the global hotkey."""
+        """Called by the toolbar button, the local shortcut, and the global hotkey."""
+        # Guard against re-entry: a Gemini request in flight must finish
+        # before we kick off another one. Otherwise the QThread reference
+        # gets overwritten and the still-running thread is destroyed by GC,
+        # which crashes Qt.
+        if self._is_request_in_flight():
+            self._status_label.setText(
+                "Still working on the previous question — please wait."
+            )
+            return
+
         provider = self._provider_box.currentData() or "gemini"
         self._response_view.setPlainText("")
         self._status_label.setText("Capturing screen…")
+        self._set_answer_controls_enabled(False)
 
         if self._settings.auto_hide_window:
             self.showMinimized()
@@ -228,8 +239,28 @@ class OverlayWindow(QMainWindow):
                 shot.png_bytes,
                 self._settings.extra_question or "Answer the question on screen.",
             )
+            # ChatGPT path doesn't use _gemini_thread; re-enable controls
+            # once the response arrives via _show_final_response, but also
+            # re-enable here as a safety net so the user isn't stuck if
+            # ChatGPT silently fails.
         else:
             self._send_to_gemini(shot.png_bytes)
+
+    def _is_request_in_flight(self) -> bool:
+        """True while a Gemini QThread is still running."""
+        thread = self._gemini_thread
+        if thread is None:
+            return False
+        try:
+            return bool(thread.isRunning())
+        except RuntimeError:
+            # Underlying C++ object already deleted.
+            return False
+
+    def _set_answer_controls_enabled(self, enabled: bool) -> None:
+        """Toggle the Answer button + toolbar action together."""
+        self._answer_button.setEnabled(enabled)
+        self._answer_action.setEnabled(enabled)
 
     def _send_to_gemini(self, png_bytes: bytes) -> None:
         if not self._settings.gemini_api_key:
@@ -240,7 +271,6 @@ class OverlayWindow(QMainWindow):
         self._status_label.setText(
             f"Asking Gemini ({self._settings.gemini_model})…"
         )
-        self._answer_button.setEnabled(False)
 
         thread, worker = run_gemini_async(
             api_key=self._settings.gemini_api_key,
@@ -276,9 +306,26 @@ class OverlayWindow(QMainWindow):
     def _show_final_response(self, text: str) -> None:
         self._response_view.setPlainText(text or "(empty response)")
         self._status_label.setText("Done.")
-        self._answer_button.setEnabled(True)
+        self._set_answer_controls_enabled(True)
+        self._cleanup_gemini_thread()
 
     def _show_error(self, message: str) -> None:
-        self._answer_button.setEnabled(True)
+        self._set_answer_controls_enabled(True)
         self._status_label.setText("Error.")
+        self._cleanup_gemini_thread()
         QMessageBox.warning(self, "Aura Desktop", message)
+
+    def _cleanup_gemini_thread(self) -> None:
+        """Drop the stored thread reference once the request has finished."""
+        thread = self._gemini_thread
+        if thread is None:
+            return
+        try:
+            if thread.isRunning():
+                # Don't drop a still-running thread; let it finish and call
+                # us again via final/error.
+                return
+        except RuntimeError:
+            pass
+        self._gemini_thread = None
+        self._gemini_worker = None
