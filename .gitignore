@@ -14,5 +14,6 @@ __pycache__/
 dist/
 build/
 *.spec
+!aura_desktop.spec
 # AI Provider configuration file with secret keys
 ai_providers.json

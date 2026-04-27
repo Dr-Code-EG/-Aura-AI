@@ -20,6 +20,29 @@
 
 ---
 
+## 🆕 Aura Desktop — the click-to-run build
+
+If you don't need the full stealth/voice stack and just want **"press a
+button → screenshot → answer"**, this fork ships a separate, simpler
+PyQt6 build alongside the original overlay:
+
+```bash
+pip install -r requirements-desktop.txt
+python aura_desktop.py
+```
+
+* **Two providers**: Gemini via API key, **or** ChatGPT via an embedded
+  logged-in browser (no API key needed — sign in once, cookies persist).
+* **One button + global hotkey** (`Ctrl+Shift+A`) — captures the screen,
+  sends the image, shows the answer in a floating panel.
+* **No `.env` editing** — settings live in `~/.aura_desktop/config.json`.
+* **Real `.exe`** — `pyinstaller aura_desktop.spec` produces
+  `dist/AuraDesktop/AuraDesktop.exe`.
+
+See [`desktop_app/README.md`](desktop_app/README.md) for details.
+
+---
+
 ## ✨ What is Aura?
 
 Aura isn't just another interview prep tool. It's your secret weapon for **any challenge**—from aptitude tests to quantitative brain-twisters, behavioral showdowns to certification exams. Aura is a **revolutionary AI assistant** that operates in real-time, providing candidates with the critical insights they need to excel in high-stakes situations—all without ever tripping tab-switching warnings, thanks to its stealthy, seamless design.
