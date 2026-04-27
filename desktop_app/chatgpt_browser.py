@@ -17,13 +17,20 @@ from importlib import resources
 from typing import Optional
 
 from PyQt6.QtCore import QUrl, pyqtSignal
+from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtWebEngineCore import (
     QWebEngineProfile,
     QWebEnginePage,
     QWebEngineSettings,
 )
 from PyQt6.QtWebEngineWidgets import QWebEngineView
-from PyQt6.QtWidgets import QVBoxLayout, QWidget
+from PyQt6.QtWidgets import (
+    QDialog,
+    QHBoxLayout,
+    QPushButton,
+    QVBoxLayout,
+    QWidget,
+)
 
 from .settings_store import ensure_browser_profile_dir
 
@@ -40,14 +47,34 @@ def _load_inject_js() -> str:
 
 
 class _BridgePage(QWebEnginePage):
-    """QWebEnginePage that re-emits partial JS messages to Python signals."""
+    """QWebEnginePage that supports popups + re-emits partial JS messages."""
 
     def __init__(self, profile: QWebEngineProfile, parent) -> None:
         super().__init__(profile, parent)
         self._partial_callback = None
+        self._popup_factory = None
 
     def set_partial_callback(self, cb) -> None:
         self._partial_callback = cb
+
+    def set_popup_factory(self, factory) -> None:
+        """Function called when the page wants to open a new window.
+
+        Receives the requested ``QWebEnginePage.WebWindowType`` and must
+        return a :class:`QWebEnginePage` whose view is already shown so
+        Chromium can navigate it (used for OAuth login popups, etc).
+        """
+        self._popup_factory = factory
+
+    def createWindow(self, window_type):
+        # Login flows (Google/Microsoft sign-in, OpenAI's auth popup) call
+        # ``window.open`` and need a real popup page to navigate into.
+        if self._popup_factory is not None:
+            try:
+                return self._popup_factory(window_type)
+            except Exception:
+                return None
+        return None
 
     def javaScriptConsoleMessage(self, level, message, line_number, source_id):
         # Intercept ``console.log("AURA_PARTIAL:" + text)`` from the bridge
@@ -89,23 +116,70 @@ class ChatGPTBrowser(QWidget):
 
         self._page = _BridgePage(self._profile, self)
         self._page.set_partial_callback(self._emit_partial)
+        self._page.set_popup_factory(self._spawn_popup)
         s = self._page.settings()
         s.setAttribute(QWebEngineSettings.WebAttribute.JavascriptEnabled, True)
         s.setAttribute(QWebEngineSettings.WebAttribute.LocalStorageEnabled, True)
         s.setAttribute(
             QWebEngineSettings.WebAttribute.JavascriptCanAccessClipboard, True
         )
+        # Allow the page itself to call ``window.open`` for OAuth popups.
+        s.setAttribute(
+            QWebEngineSettings.WebAttribute.JavascriptCanOpenWindows, True
+        )
+        s.setAttribute(
+            QWebEngineSettings.WebAttribute.AllowRunningInsecureContent, False
+        )
+        s.setAttribute(QWebEngineSettings.WebAttribute.PluginsEnabled, True)
 
         self._view = QWebEngineView(self)
         self._view.setPage(self._page)
         self._page.loadFinished.connect(self._on_load_finished)
 
+        # Toolbar with manual reload + open-in-system-browser fallbacks for
+        # cases where the embedded UA is blocked by an identity provider.
+        toolbar = QHBoxLayout()
+        toolbar.setContentsMargins(4, 4, 4, 0)
+        toolbar.setSpacing(6)
+
+        reload_btn = QPushButton("\u21bb Reload", self)
+        reload_btn.setToolTip("Reload the ChatGPT page.")
+        reload_btn.clicked.connect(self.reload)
+        toolbar.addWidget(reload_btn)
+
+        home_btn = QPushButton("Home", self)
+        home_btn.setToolTip("Go back to chatgpt.com")
+        home_btn.clicked.connect(self.go_home)
+        toolbar.addWidget(home_btn)
+
+        clear_btn = QPushButton("Clear cookies", self)
+        clear_btn.setToolTip(
+            "Wipe the saved ChatGPT session and force a fresh login."
+        )
+        clear_btn.clicked.connect(self.clear_session)
+        toolbar.addWidget(clear_btn)
+
+        external_btn = QPushButton("Open in system browser", self)
+        external_btn.setToolTip(
+            "Open ChatGPT in your real browser if the embedded login "
+            "is being blocked. After signing in there, return to this app "
+            "and click Reload."
+        )
+        external_btn.clicked.connect(self._open_in_system_browser)
+        toolbar.addWidget(external_btn)
+
+        toolbar.addStretch(1)
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(self._view)
+        layout.addLayout(toolbar)
+        layout.addWidget(self._view, 1)
 
         self._inject_js = _load_inject_js()
         self._page_ready = False
+        # Keep references to popup windows so they aren't garbage-collected
+        # before Chromium finishes the auth dance inside them.
+        self._popups: list[QDialog] = []
 
         self._view.setUrl(QUrl(CHATGPT_URL))
 
@@ -119,6 +193,55 @@ class ChatGPTBrowser(QWidget):
 
     def is_ready(self) -> bool:
         return self._page_ready
+
+    def clear_session(self) -> None:
+        """Wipe persisted cookies + reload, forcing a fresh login."""
+        try:
+            self._profile.cookieStore().deleteAllCookies()
+        except Exception:
+            pass
+        try:
+            self._profile.clearAllVisitedLinks()
+        except Exception:
+            pass
+        self.go_home()
+
+    def _open_in_system_browser(self) -> None:
+        """Open ChatGPT in the user's real browser as a fallback."""
+        QDesktopServices.openUrl(QUrl(CHATGPT_URL))
+
+    def _spawn_popup(self, window_type) -> Optional[QWebEnginePage]:
+        """Create a popup window that shares our profile (for OAuth flows)."""
+        dlg = QDialog(self)
+        dlg.setWindowTitle("ChatGPT sign-in")
+        dlg.resize(900, 700)
+
+        page = _BridgePage(self._profile, dlg)
+        # Popups can also open further popups (Microsoft device-code, etc).
+        page.set_popup_factory(self._spawn_popup)
+
+        view = QWebEngineView(dlg)
+        view.setPage(page)
+
+        lay = QVBoxLayout(dlg)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.addWidget(view)
+
+        # Closing the popup should drop our reference so it gets GC'd.
+        def _on_finished(_result: int) -> None:
+            try:
+                self._popups.remove(dlg)
+            except ValueError:
+                pass
+
+        dlg.finished.connect(_on_finished)
+        # Auth providers usually redirect back to the embedded ChatGPT page
+        # and then call ``window.close()`` — listen for that.
+        page.windowCloseRequested.connect(dlg.accept)
+
+        self._popups.append(dlg)
+        dlg.show()
+        return page
 
     # ------------------------------------------------------------------ events
 
