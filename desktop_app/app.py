@@ -59,18 +59,17 @@ def main(argv: list[str] | None = None) -> int:
     bridge = _HotkeyBridge()
     bridge.triggered.connect(window.trigger_answer)
 
-    hotkey = GlobalHotkey(settings.hotkey, bridge.triggered.emit)
-    hotkey.start()
+    initial_hotkey = GlobalHotkey(settings.hotkey, bridge.triggered.emit)
+    initial_hotkey.start()
+    # Mutable single-element holder so settings changes can swap the active
+    # listener without leaking the previous one.
+    _hotkey_holder: list[GlobalHotkey] = [initial_hotkey]
 
     def _on_settings_changed(new_settings: Settings) -> None:
-        hotkey.stop()
+        _hotkey_holder[0].stop()
         new_hotkey = GlobalHotkey(new_settings.hotkey, bridge.triggered.emit)
         new_hotkey.start()
-        # Replace the closure-captured reference. Since Python closures bind
-        # by name, we mutate the outer variable through a list trick:
         _hotkey_holder[0] = new_hotkey
-
-    _hotkey_holder = [hotkey]
     window.settings_changed_callback = _on_settings_changed  # type: ignore[attr-defined]
 
     window.show()

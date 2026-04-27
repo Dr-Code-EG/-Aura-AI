@@ -1,0 +1,113 @@
+name: Build Aura Desktop (Windows)
+
+# Builds a single-folder Windows .exe of the simplified Aura Desktop build
+# (desktop_app/) on every push to the desktop-app feature branch and on
+# every manual run. The .exe is uploaded as a CI artifact, and (when the
+# workflow is triggered by a tag like v0.1.0) zipped + attached to a
+# GitHub Release so non-technical users can just download and run it.
+
+on:
+  push:
+    branches:
+      - "devin/**-desktop-app"
+      - "main"
+      - "master"
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "desktop_app/**"
+      - "aura_desktop.py"
+      - "aura_desktop.spec"
+      - "requirements-desktop.txt"
+      - ".github/workflows/build-windows.yml"
+
+jobs:
+  build:
+    name: Build AuraDesktop.exe
+    runs-on: windows-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: requirements-desktop.txt
+
+      - name: Install dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-desktop.txt
+          pip install pyinstaller
+
+      - name: Build with PyInstaller
+        shell: pwsh
+        run: pyinstaller --noconfirm aura_desktop.spec
+
+      - name: Show build output
+        shell: pwsh
+        run: |
+          Get-ChildItem -Recurse dist\AuraDesktop | Select-Object -First 30
+          if (-not (Test-Path "dist\AuraDesktop\AuraDesktop.exe")) {
+            throw "AuraDesktop.exe was not produced."
+          }
+
+      - name: Bundle as zip
+        shell: pwsh
+        run: |
+          $version = "${{ github.ref_name }}"
+          if ($version -eq "") { $version = "dev-${{ github.run_number }}" }
+          $zip = "AuraDesktop-windows-$version.zip"
+          Compress-Archive -Path "dist\AuraDesktop\*" -DestinationPath $zip
+          "ZIP_NAME=$zip" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AuraDesktop-windows
+          path: ${{ env.ZIP_NAME }}
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish GitHub Release (tags only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.ZIP_NAME }}
+          fail_on_unmatched_files: true
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish rolling pre-release (default branch)
+        if: |
+          (github.ref == 'refs/heads/main' ||
+           github.ref == 'refs/heads/master' ||
+           startsWith(github.ref_name, 'devin/'))
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest-windows
+          name: "Aura Desktop — latest Windows build"
+          body: |
+            Rolling pre-release with the latest Windows build of Aura Desktop.
+            Built from `${{ github.ref_name }}` @ `${{ github.sha }}`.
+
+            **How to use:**
+            1. Download the `.zip` below.
+            2. Unzip anywhere (e.g. `C:\Users\You\AuraDesktop`).
+            3. Double-click `AuraDesktop.exe`.
+            4. Open Settings (Ctrl+,) and paste a Gemini API key, OR
+               switch to the *ChatGPT login* tab and sign in.
+          prerelease: true
+          files: ${{ env.ZIP_NAME }}
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -18,6 +18,12 @@ a = Analysis(
         'PyQt6.QtWebEngineCore',
         'PyQt6.QtWebEngineWidgets',
         'PyQt6.QtWebChannel',
+        # pynput backends are loaded dynamically by platform.
+        'pynput.keyboard._win32',
+        'pynput.mouse._win32',
+        'pynput._util.win32',
+        # mss platform backends are also dynamically imported.
+        'mss.windows',
     ],
     hookspath=[],
     hooksconfig={},

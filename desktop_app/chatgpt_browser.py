@@ -29,6 +29,7 @@ from .settings_store import ensure_browser_profile_dir
 
 
 CHATGPT_URL = "https://chatgpt.com/"
+PARTIAL_PREFIX = "AURA_PARTIAL:"
 
 
 def _load_inject_js() -> str:
@@ -36,6 +37,29 @@ def _load_inject_js() -> str:
     return resources.files("desktop_app.resources").joinpath(
         "chatgpt_inject.js"
     ).read_text(encoding="utf-8")
+
+
+class _BridgePage(QWebEnginePage):
+    """QWebEnginePage that re-emits partial JS messages to Python signals."""
+
+    def __init__(self, profile: QWebEngineProfile, parent) -> None:
+        super().__init__(profile, parent)
+        self._partial_callback = None
+
+    def set_partial_callback(self, cb) -> None:
+        self._partial_callback = cb
+
+    def javaScriptConsoleMessage(self, level, message, line_number, source_id):
+        # Intercept ``console.log("AURA_PARTIAL:" + text)`` from the bridge
+        # script and route it to the Python-side partial-response signal.
+        if isinstance(message, str) and message.startswith(PARTIAL_PREFIX):
+            if self._partial_callback is not None:
+                try:
+                    self._partial_callback(message[len(PARTIAL_PREFIX):])
+                except Exception:
+                    pass
+            return
+        super().javaScriptConsoleMessage(level, message, line_number, source_id)
 
 
 class ChatGPTBrowser(QWidget):
@@ -63,7 +87,8 @@ class ChatGPTBrowser(QWidget):
             QWebEngineProfile.PersistentCookiesPolicy.ForcePersistentCookies
         )
 
-        self._page = QWebEnginePage(self._profile, self)
+        self._page = _BridgePage(self._profile, self)
+        self._page.set_partial_callback(self._emit_partial)
         s = self._page.settings()
         s.setAttribute(QWebEngineSettings.WebAttribute.JavascriptEnabled, True)
         s.setAttribute(QWebEngineSettings.WebAttribute.LocalStorageEnabled, True)
@@ -116,27 +141,49 @@ class ChatGPTBrowser(QWidget):
 
     # ------------------------------------------------------------------ public
 
+    def _emit_partial(self, text: str) -> None:
+        """Forward intercepted JS partials to the public Qt signal."""
+        if text:
+            self.partial_response.emit(text)
+
     def send_screenshot(
         self,
         png_bytes: bytes,
         question: str,
         on_progress: Optional[Callable[[str], None]] = None,
     ) -> None:
-        """Send a screenshot + question to ChatGPT and emit the reply."""
+        """Send a screenshot + question to ChatGPT and emit the reply.
+
+        Streaming partials are emitted via the :pyattr:`partial_response`
+        signal regardless of ``on_progress``; the parameter is retained for
+        backwards compatibility and will be invoked in addition to the
+        signal if provided.
+        """
         b64 = base64.standard_b64encode(png_bytes).decode("ascii")
         # Escape the question safely for embedding in a JS literal.
         question_literal = json.dumps(question or "")
         b64_literal = json.dumps(b64)
 
-        # Hook up streaming partials by replacing window.auraOnPartial.
+        # Always install the partial-response forwarder. ``_BridgePage``
+        # intercepts the ``AURA_PARTIAL:`` console messages and emits
+        # :pyattr:`partial_response` for us.
+        self._page.runJavaScript(
+            "window.auraOnPartial = function(t){"
+            "  try { console.log('AURA_PARTIAL:' + t); } catch (_) {}"
+            "};"
+        )
         if on_progress is not None:
-            # Receive partial text from the page via console.log marker that
-            # we'll capture with a JS callback channel below.
-            self._page.runJavaScript(
-                "window.auraOnPartial = function(t){"
-                "  console.log('AURA_PARTIAL:' + t);"
-                "};"
-            )
+            # Connect the optional callback for this single send. We use a
+            # one-shot helper so we don't leak slots between sends.
+            def _bridge(text: str) -> None:
+                try:
+                    on_progress(text)
+                except Exception:
+                    pass
+            try:
+                self.partial_response.connect(_bridge)
+            except Exception:
+                pass
 
         script = (
             "(async () => {"
