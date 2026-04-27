@@ -227,7 +227,6 @@ class OverlayWindow(QMainWindow):
             self._chatgpt.send_screenshot(
                 shot.png_bytes,
                 self._settings.extra_question or "Answer the question on screen.",
-                on_progress=self._show_partial_response,
             )
         else:
             self._send_to_gemini(shot.png_bytes)

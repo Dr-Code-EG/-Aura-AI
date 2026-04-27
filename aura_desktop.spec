@@ -18,6 +18,9 @@ a = Analysis(
         'PyQt6.QtWebEngineCore',
         'PyQt6.QtWebEngineWidgets',
         'PyQt6.QtWebChannel',
+        # The bundled JS bridge is loaded via importlib.resources, so the
+        # frozen build needs to recognize this directory as a real package.
+        'desktop_app.resources',
         # pynput backends are loaded dynamically by platform.
         'pynput.keyboard._win32',
         'pynput.mouse._win32',

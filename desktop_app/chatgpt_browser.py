@@ -14,7 +14,7 @@ from __future__ import annotations
 import base64
 import json
 from importlib import resources
-from typing import Callable, Optional
+from typing import Optional
 
 from PyQt6.QtCore import QUrl, pyqtSignal
 from PyQt6.QtWebEngineCore import (
@@ -150,21 +150,20 @@ class ChatGPTBrowser(QWidget):
         self,
         png_bytes: bytes,
         question: str,
-        on_progress: Optional[Callable[[str], None]] = None,
     ) -> None:
-        """Send a screenshot + question to ChatGPT and emit the reply.
+        """Send a screenshot + question to ChatGPT.
 
-        Streaming partials are emitted via the :pyattr:`partial_response`
-        signal regardless of ``on_progress``; the parameter is retained for
-        backwards compatibility and will be invoked in addition to the
-        signal if provided.
+        Streaming partials are emitted on :pyattr:`partial_response`;
+        the final answer arrives on :pyattr:`final_response`. Connect
+        those signals once at construction time — there is no per-call
+        callback parameter (it would leak slots).
         """
         b64 = base64.standard_b64encode(png_bytes).decode("ascii")
         # Escape the question safely for embedding in a JS literal.
         question_literal = json.dumps(question or "")
         b64_literal = json.dumps(b64)
 
-        # Always install the partial-response forwarder. ``_BridgePage``
+        # Install the partial-response forwarder. ``_BridgePage``
         # intercepts the ``AURA_PARTIAL:`` console messages and emits
         # :pyattr:`partial_response` for us.
         self._page.runJavaScript(
@@ -172,18 +171,6 @@ class ChatGPTBrowser(QWidget):
             "  try { console.log('AURA_PARTIAL:' + t); } catch (_) {}"
             "};"
         )
-        if on_progress is not None:
-            # Connect the optional callback for this single send. We use a
-            # one-shot helper so we don't leak slots between sends.
-            def _bridge(text: str) -> None:
-                try:
-                    on_progress(text)
-                except Exception:
-                    pass
-            try:
-                self.partial_response.connect(_bridge)
-            except Exception:
-                pass
 
         script = (
             "(async () => {"
