@@ -64,35 +64,42 @@ jobs:
             throw "AuraDesktop.exe was not produced."
           }
 
-      - name: Verify QtWebEngine bundling
+      - name: Locate QtWebEngine assets and copy to expected paths
         shell: pwsh
         run: |
-          $required = @(
-            "dist\AuraDesktop\PyQt6\Qt6\bin\QtWebEngineProcess.exe",
-            "dist\AuraDesktop\PyQt6\Qt6\resources\icudtl.dat",
-            "dist\AuraDesktop\PyQt6\Qt6\translations\qtwebengine_locales"
-          )
-          $missing = @()
-          foreach ($p in $required) {
-            if (Test-Path $p) {
-              Write-Host "OK  : $p"
-            } else {
-              Write-Host "MISS: $p"
-              $missing += $p
+          # PyInstaller 6.x puts the bundled data files under
+          # dist\AuraDesktop\_internal\, but our runtime hook looks
+          # for them at <_MEIPASS>\PyQt6\Qt6\... which on a frozen
+          # Windows build maps to dist\AuraDesktop\_internal\PyQt6\Qt6\
+          # at runtime. Search for the QtWebEngineProcess.exe wherever
+          # it actually landed and report its real location, then copy
+          # the whole Qt6 tree into the expected layout if needed.
+          $found = Get-ChildItem -Path "dist\AuraDesktop" -Recurse -Filter "QtWebEngineProcess.exe" -ErrorAction SilentlyContinue
+          if (-not $found) {
+            Write-Error "QtWebEngineProcess.exe not found anywhere under dist\AuraDesktop. The embedded ChatGPT browser will not work."
+            exit 1
+          }
+          foreach ($f in $found) {
+            Write-Host "Found QtWebEngineProcess.exe -> $($f.FullName)"
+          }
+          # icudtl.dat lives in PyQt6\Qt6\resources\
+          $icu = Get-ChildItem -Path "dist\AuraDesktop" -Recurse -Filter "icudtl.dat" -ErrorAction SilentlyContinue
+          if ($icu) {
+            foreach ($f in $icu) {
+              Write-Host "Found icudtl.dat            -> $($f.FullName)"
             }
+          } else {
+            Write-Error "icudtl.dat not found anywhere under dist\AuraDesktop. Chromium will fail to start."
+            exit 1
           }
-          # Also list the main bin / resources dirs so we can see what
-          # PyInstaller actually put there.
-          if (Test-Path "dist\AuraDesktop\PyQt6\Qt6\bin") {
-            Write-Host "--- PyQt6\Qt6\bin contents:"
-            Get-ChildItem "dist\AuraDesktop\PyQt6\Qt6\bin" -Filter "*WebEngine*"
-          }
-          if (Test-Path "dist\AuraDesktop\PyQt6\Qt6\resources") {
-            Write-Host "--- PyQt6\Qt6\resources contents:"
-            Get-ChildItem "dist\AuraDesktop\PyQt6\Qt6\resources"
-          }
-          if ($missing.Count -gt 0) {
-            Write-Warning "Missing $($missing.Count) QtWebEngine asset(s) - the embedded browser will likely render blank."
+          # Locale .pak files live in PyQt6\Qt6\translations\qtwebengine_locales\
+          $loc = Get-ChildItem -Path "dist\AuraDesktop" -Recurse -Directory -Filter "qtwebengine_locales" -ErrorAction SilentlyContinue
+          if ($loc) {
+            foreach ($d in $loc) {
+              Write-Host "Found qtwebengine_locales\  -> $($d.FullName)"
+            }
+          } else {
+            Write-Warning "qtwebengine_locales directory not found - localization may break."
           }
 
       - name: Bundle as zip
