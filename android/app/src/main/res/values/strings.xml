@@ -30,6 +30,7 @@
 
     <string name="response_label">ChatGPT response</string>
     <string name="dialog_close">Close</string>
+    <string name="dialog_retry">Retry</string>
     <string name="dialog_copy">Copy</string>
     <string name="dialog_open_chat">Open chat</string>
     <string name="dialog_loading">Asking ChatGPT…</string>

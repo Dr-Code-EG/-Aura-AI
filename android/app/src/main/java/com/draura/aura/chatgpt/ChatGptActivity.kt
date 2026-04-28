@@ -443,6 +443,7 @@ private fun ChatGptScreen(
                                 onClose = onDismissResponse,
                                 onOpenChat = onOpenChat,
                                 onRetry = onRetry,
+                                canRetry = PendingScreenshotHolder.peekBytes() != null,
                             )
                     }
                 }
@@ -527,6 +528,7 @@ private fun ErrorCard(
     onClose: () -> Unit,
     onOpenChat: () -> Unit,
     onRetry: () -> Unit,
+    canRetry: Boolean,
 ) {
     Card(modifier = Modifier
         .fillMaxWidth()
@@ -547,6 +549,12 @@ private fun ErrorCard(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
+                if (canRetry) {
+                    OutlinedButton(
+                        onClick = onRetry,
+                        modifier = Modifier.weight(1f),
+                    ) { Text(stringResource(R.string.dialog_retry)) }
+                }
                 OutlinedButton(
                     onClick = onOpenChat,
                     modifier = Modifier.weight(1f),

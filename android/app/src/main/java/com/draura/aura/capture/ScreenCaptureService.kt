@@ -28,6 +28,7 @@ import com.draura.aura.chatgpt.ChatGptActivity
 import com.draura.aura.chatgpt.PendingScreenshotHolder
 import com.draura.aura.ui.MainActivity
 import java.io.ByteArrayOutputStream
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * One-shot foreground service that owns a [MediaProjection] just long
@@ -119,16 +120,18 @@ class ScreenCaptureService : Service() {
         val reader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2)
         var virtualDisplay: VirtualDisplay? = null
 
-        // We need to create the VirtualDisplay BEFORE registering an
-        // image listener — otherwise the listener can fire on a thread
-        // that observes a half-initialised state in some emulator
-        // builds.
-        var consumed = false
+        // The image listener (running on `handler`) and the safety
+        // timeout (running on `mainHandler`) race to consume exactly
+        // one frame. Use AtomicBoolean so the cross-thread visibility
+        // and atomicity of the "I claim this" decision is guaranteed.
+        val consumed = AtomicBoolean(false)
         reader.setOnImageAvailableListener({ r ->
-            if (consumed) return@setOnImageAvailableListener
             val image: Image? = try { r.acquireLatestImage() } catch (_: Throwable) { null }
             if (image == null) return@setOnImageAvailableListener
-            consumed = true
+            if (!consumed.compareAndSet(false, true)) {
+                try { image.close() } catch (_: Throwable) {}
+                return@setOnImageAvailableListener
+            }
             try {
                 val png = imageToPng(image)
                 handOff(png)
@@ -157,8 +160,7 @@ class ScreenCaptureService : Service() {
         // Safety: if no frame arrives within 4s, give up. Some devices
         // (notably old emulators) don't deliver the very first frame.
         mainHandler.postDelayed({
-            if (!consumed) {
-                consumed = true
+            if (consumed.compareAndSet(false, true)) {
                 handOffError("No frame captured in time.")
                 tearDown(virtualDisplay, reader, projection)
             }
