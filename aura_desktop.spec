@@ -63,11 +63,9 @@ exe = EXE(
     # QtWebEngineProcess.exe and the Qt6WebEngineCore DLL has been
     # known to break runtime loading on Windows.
     upx=False,
-    # Temporarily enable a console window so any Chromium / Qt error
-    # output is visible if the embedded browser fails to render. Once
-    # the QtWebEngine bundling is confirmed working, flip this back
-    # to False for a windowless build.
-    console=True,
+    # Embedded browser bundling has been confirmed working, so ship
+    # a clean windowless build without the noisy black console.
+    console=False,
     icon=None,
 )
 coll = COLLECT(

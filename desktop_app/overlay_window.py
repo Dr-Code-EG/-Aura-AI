@@ -1,10 +1,9 @@
 """Floating control window — the main UI of Aura Desktop.
 
-Always-on-top, frameless on request, with three tabs:
-
-* **Answer** — the big "📸 Answer the question" button + the response area.
-* **ChatGPT** — embedded ChatGPT browser tab (log in once, stay logged in).
-* **Settings** — provider configuration.
+Always-on-top, frameless on request. The window is split vertically:
+the Answer button + response area sit on top, and the embedded
+ChatGPT browser fills the rest of the page below — so the user can
+watch ChatGPT working in real time without flipping between tabs.
 """
 
 from __future__ import annotations
@@ -21,9 +20,9 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
+    QSplitter,
     QStatusBar,
     QStyle,
-    QTabWidget,
     QToolBar,
     QVBoxLayout,
     QWidget,
@@ -104,19 +103,22 @@ class OverlayWindow(QMainWindow):
         pin_action.triggered.connect(self._toggle_always_on_top)
         toolbar.addAction(pin_action)
 
-        # Tabs
-        self._tabs = QTabWidget(self)
-        outer.addWidget(self._tabs)
+        # Single page layout: Answer controls on top, ChatGPT browser
+        # below. A QSplitter lets the user resize either pane to taste.
+        splitter = QSplitter(Qt.Orientation.Vertical, self)
+        splitter.setChildrenCollapsible(False)
+        outer.addWidget(splitter, stretch=1)
 
-        # Tab 1 — Answer
-        answer_tab = QWidget()
-        answer_layout = QVBoxLayout(answer_tab)
+        # Top pane — Answer button + response view.
+        answer_pane = QWidget()
+        answer_layout = QVBoxLayout(answer_pane)
+        answer_layout.setContentsMargins(0, 0, 0, 0)
 
         big_button_row = QHBoxLayout()
-        self._answer_button = QPushButton("📸  Answer the question")
-        self._answer_button.setMinimumHeight(56)
+        self._answer_button = QPushButton("\U0001F4F8  Answer the question")
+        self._answer_button.setMinimumHeight(48)
         self._answer_button.setStyleSheet(
-            "QPushButton { font-size: 18px; font-weight: 600; }"
+            "QPushButton { font-size: 16px; font-weight: 600; }"
         )
         self._answer_button.clicked.connect(self.trigger_answer)
         big_button_row.addWidget(self._answer_button)
@@ -127,19 +129,26 @@ class OverlayWindow(QMainWindow):
         self._response_view.setReadOnly(True)
         self._response_view.setPlaceholderText(
             "Click the button (or press your hotkey) while your exam question "
-            "is on screen — the answer will appear here."
+            "is on screen \u2014 the answer will appear here."
         )
+        self._response_view.setMinimumHeight(80)
         answer_layout.addWidget(self._response_view, stretch=1)
 
-        self._tabs.addTab(answer_tab, "Answer")
+        splitter.addWidget(answer_pane)
 
-        # Tab 2 — ChatGPT browser
+        # Bottom pane — ChatGPT browser.
         self._chatgpt = ChatGPTBrowser()
         self._chatgpt.partial_response.connect(self._show_partial_response)
         self._chatgpt.final_response.connect(self._show_final_response)
         self._chatgpt.error_occurred.connect(self._on_chatgpt_error)
         self._chatgpt.page_ready_changed.connect(self._on_chatgpt_ready)
-        self._tabs.addTab(self._chatgpt, "ChatGPT login")
+        splitter.addWidget(self._chatgpt)
+
+        # Give most of the height to the ChatGPT browser by default;
+        # the user can drag the splitter handle to rebalance.
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 1)
+        splitter.setSizes([220, 600])
 
         # Status bar
         sb = QStatusBar(self)
@@ -381,11 +390,10 @@ class OverlayWindow(QMainWindow):
         Forward to _show_error only when there's actually a ChatGPT
         request in flight; otherwise just nudge the status bar.
         """
-        # If the bridge says "please log in", proactively switch to
-        # the ChatGPT tab so the user can sign in without hunting for
-        # it. This is the common first-run path.
-        if "log in to ChatGPT" in message or "sign in" in message.lower():
-            self._tabs.setCurrentWidget(self._chatgpt)
+        # The ChatGPT browser is already on screen alongside the
+        # Answer pane (single-page layout), so we no longer need to
+        # switch tabs when a login is required — the user can simply
+        # log in inside the embedded view that's already visible.
         if self._chatgpt_in_flight:
             self._show_error(message)
         else:
