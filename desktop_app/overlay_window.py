@@ -137,7 +137,7 @@ class OverlayWindow(QMainWindow):
         self._chatgpt = ChatGPTBrowser()
         self._chatgpt.partial_response.connect(self._show_partial_response)
         self._chatgpt.final_response.connect(self._show_final_response)
-        self._chatgpt.error_occurred.connect(self._show_error)
+        self._chatgpt.error_occurred.connect(self._on_chatgpt_error)
         self._chatgpt.page_ready_changed.connect(self._on_chatgpt_ready)
         self._tabs.addTab(self._chatgpt, "ChatGPT login")
 
@@ -365,6 +365,28 @@ class OverlayWindow(QMainWindow):
         self._chatgpt_in_flight = False
         self._stop_chatgpt_watchdog()
         self._cleanup_gemini_thread()
+
+    def _on_chatgpt_error(self, message: str) -> None:
+        """Slot for the ChatGPTBrowser's spontaneous error_occurred signal.
+
+        ChatGPTBrowser emits error_occurred both for request-scoped
+        failures (the bridge couldn't send our screenshot) and for
+        ambient browser issues (the page failed to load while no one
+        was waiting). The shared _show_error path treats every error
+        as a request-scoped failure: it pops a modal dialog and
+        re-enables the answer button. Routing ambient errors through
+        that path would (a) re-enable controls in the middle of an
+        in-flight Gemini request and (b) pop a QMessageBox during the
+        user's exam.
+
+        Forward to _show_error only when there's actually a ChatGPT
+        request in flight; otherwise just nudge the status bar.
+        """
+        if self._chatgpt_in_flight:
+            self._show_error(message)
+        else:
+            # Ambient — don't touch request state, don't pop a modal.
+            self._status_label.setText(f"ChatGPT: {message}")
 
     def _show_error(self, message: str) -> None:
         self._capture_pending = False

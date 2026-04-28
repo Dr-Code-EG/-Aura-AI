@@ -53,10 +53,14 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.lifecycle.lifecycleScope
 import com.draura.aura.R
 import com.draura.aura.settings.AuraSettings
 import com.draura.aura.settings.SettingsRepository
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.firstOrNull
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -97,6 +101,19 @@ class ChatGptActivity : ComponentActivity() {
      * injection while one is already running.
      */
     private val autoSendInProgress = AtomicBoolean(false)
+
+    /**
+     * The user's default question, eagerly loaded off the UI thread
+     * during [onCreate] so [runAutoSend] never has to do blocking
+     * DataStore I/O on the main thread (DataStore touches disk on
+     * its first read — doing that synchronously from the WebView's
+     * onPageFinished callback risks an ANR).
+     *
+     * Volatile so the read in [runAutoSend] sees the value written by
+     * the lifecycleScope coroutine without needing a lock.
+     */
+    @Volatile
+    private var cachedQuestion: String = "Answer the question on the screen."
 
     sealed class UiState {
         data object Idle : UiState()
@@ -148,6 +165,21 @@ class ChatGptActivity : ComponentActivity() {
             // Wait for the WebView to come up + page to load — runAutoSend
             // gates on that internally via onPageFinished.
             // The PendingScreenshotHolder may already contain the bytes.
+        }
+
+        // Warm cachedQuestion off the main thread. DataStore's first
+        // read touches disk; doing it synchronously from runAutoSend
+        // (which is called from WebView callbacks on the UI thread)
+        // would risk an ANR.
+        lifecycleScope.launch {
+            val q = withContext(Dispatchers.IO) {
+                runCatching {
+                    SettingsRepository(applicationContext).settingsFlow.firstOrNull()
+                }.getOrNull()
+            }
+            if (q != null && q.extraQuestion.isNotBlank()) {
+                cachedQuestion = q.extraQuestion
+            }
         }
     }
 
@@ -232,28 +264,15 @@ class ChatGptActivity : ComponentActivity() {
             // double-inject.
             return
         }
-        val question = settingsQuestionBlocking()
+        // cachedQuestion was warmed off the UI thread in onCreate; if
+        // the warmup hasn't finished yet we fall back to the default
+        // baked into the field initializer rather than block.
+        val question = cachedQuestion
         val b64 = Base64.encodeToString(bytes, Base64.NO_WRAP)
         val js = INJECT_JS
             .replace("__B64_PLACEHOLDER__", b64)
             .replace("__QUESTION_PLACEHOLDER__", jsString(question))
         wv.evaluateJavascript(js, null)
-    }
-
-    private fun settingsQuestionBlocking(): String {
-        // First emission of the Flow is synchronous-ish but we still
-        // need to hop threads. Use a simple wait with a default to
-        // avoid blocking the UI thread.
-        var result = "Answer the question on the screen."
-        try {
-            kotlinx.coroutines.runBlocking {
-                val s = SettingsRepository(applicationContext).settingsFlow.firstOrNull()
-                if (s != null && s.extraQuestion.isNotBlank()) result = s.extraQuestion
-            }
-        } catch (_: Throwable) {
-            // Keep default.
-        }
-        return result
     }
 
     inner class JsBridge {
