@@ -46,6 +46,10 @@ class OverlayWindow(QMainWindow):
         self._gemini_worker = None
         self._chatgpt_in_flight = False
         self._chatgpt_watchdog: Optional[QTimer] = None
+        # Set as soon as trigger_answer accepts a request, cleared when
+        # _capture_and_send actually starts. Closes the re-entry window
+        # between the in-flight check and the deferred QTimer fire.
+        self._capture_pending = False
 
         self.setWindowTitle("Aura Desktop")
         self.resize(QSize(820, 560))
@@ -204,6 +208,11 @@ class OverlayWindow(QMainWindow):
             )
             return
 
+        # Mark immediately — the actual capture is deferred via
+        # QTimer.singleShot below, and the global hotkey can re-enter
+        # during that delay.
+        self._capture_pending = True
+
         provider = self._provider_box.currentData() or "gemini"
         self._response_view.setPlainText("")
         self._status_label.setText("Capturing screen…")
@@ -218,6 +227,10 @@ class OverlayWindow(QMainWindow):
         )
 
     def _capture_and_send(self, provider: str) -> None:
+        # The real request is starting now; release the pre-fire guard.
+        # Either the gemini thread or _chatgpt_in_flight will take over
+        # tracking from here.
+        self._capture_pending = False
         try:
             shot = capture_primary_screen()
         except Exception as exc:
@@ -284,6 +297,8 @@ class OverlayWindow(QMainWindow):
         )
 
     def _is_request_in_flight(self) -> bool:
+        if self._capture_pending:
+            return True
         """True while a Gemini QThread is still running OR a ChatGPT bridge call is pending."""
         if self._chatgpt_in_flight:
             return True
@@ -343,6 +358,7 @@ class OverlayWindow(QMainWindow):
         self._status_label.setText("Streaming…")
 
     def _show_final_response(self, text: str) -> None:
+        self._capture_pending = False
         self._response_view.setPlainText(text or "(empty response)")
         self._status_label.setText("Done.")
         self._set_answer_controls_enabled(True)
@@ -351,6 +367,7 @@ class OverlayWindow(QMainWindow):
         self._cleanup_gemini_thread()
 
     def _show_error(self, message: str) -> None:
+        self._capture_pending = False
         self._set_answer_controls_enabled(True)
         self._status_label.setText("Error.")
         self._chatgpt_in_flight = False

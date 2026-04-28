@@ -151,10 +151,16 @@ class ChatGptActivity : ComponentActivity() {
         }
         if (intent.getBooleanExtra(EXTRA_AUTO_SEND, false)) {
             state.value = UiState.Loading
-            // If we already have a WebView, re-run the bridge against
-            // the new staged screenshot. If page is still loading the
-            // onPageFinished hook will pick it up.
-            runAutoSend()
+            // Only consume the staged screenshot if the WebView is
+            // fully loaded — otherwise the injected JS would be
+            // discarded by the next page load and the bytes would be
+            // gone for good. If the page is still loading, the
+            // onPageFinished hook will fire runAutoSend itself once
+            // it's ready (peekBytes is non-null until consumed).
+            val wv = webView
+            if (wv != null && wv.progress >= 100) {
+                runAutoSend()
+            }
         }
     }
 
