@@ -4,17 +4,28 @@
 
 # -*- mode: python ; coding: utf-8 -*-
 
+from PyInstaller.utils.hooks import collect_all, collect_data_files
+
+
 block_cipher = None
+
+
+# Pull in *everything* PyQt6 ships — in particular QtWebEngine's data
+# files (icudtl.dat, qtwebengine_resources*.pak, locales/, fonts) and
+# its helper executable QtWebEngineProcess.exe. Without these the
+# embedded ChatGPT browser tab loads as a blank white page in the
+# frozen build, even though it works fine in `python aura_desktop.py`.
+pyqt6_datas, pyqt6_binaries, pyqt6_hidden = collect_all("PyQt6")
 
 
 a = Analysis(
     ['aura_desktop.py'],
     pathex=[],
-    binaries=[],
-    datas=[
+    binaries=pyqt6_binaries,
+    datas=pyqt6_datas + [
         ('desktop_app/resources/chatgpt_inject.js', 'desktop_app/resources'),
     ],
-    hiddenimports=[
+    hiddenimports=pyqt6_hidden + [
         'PyQt6.QtWebEngineCore',
         'PyQt6.QtWebEngineWidgets',
         'PyQt6.QtWebChannel',
@@ -48,7 +59,10 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    # Disable UPX for QtWebEngine binaries — UPX compression of
+    # QtWebEngineProcess.exe and the Qt6WebEngineCore DLL has been
+    # known to break runtime loading on Windows.
+    upx=False,
     console=False,
     icon=None,
 )
@@ -58,7 +72,7 @@ coll = COLLECT(
     a.zipfiles,
     a.datas,
     strip=False,
-    upx=True,
+    upx=False,
     upx_exclude=[],
     name='AuraDesktop',
 )

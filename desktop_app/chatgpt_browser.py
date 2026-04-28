@@ -298,6 +298,9 @@ class ChatGPTBrowser(QWidget):
         script = (
             "(async () => {"
             "  try {"
+            "    if (typeof window.auraSendScreenshot !== 'function') {"
+            "      return { ok: false, error: 'AURA_BRIDGE_NOT_LOADED' };"
+            "    }"
             f"    const r = await window.auraSendScreenshot({b64_literal}, "
             f"{question_literal});"
             "    return { ok: true, text: r };"
@@ -323,6 +326,12 @@ class ChatGPTBrowser(QWidget):
             self.error_occurred.emit(
                 "Please log in to ChatGPT \u2014 switching to the ChatGPT tab. "
                 "After signing in, click the Answer button again."
+            )
+            return
+        if "AURA_BRIDGE_NOT_LOADED" in err:
+            self.error_occurred.emit(
+                "ChatGPT page hasn't finished loading. Open the ChatGPT tab, "
+                "wait for the chat UI to appear, then try again."
             )
             return
         self.error_occurred.emit(err)

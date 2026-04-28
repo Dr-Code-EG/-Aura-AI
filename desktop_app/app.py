@@ -42,11 +42,16 @@ def _set_high_dpi_attributes() -> None:
 def main(argv: list[str] | None = None) -> int:
     _set_high_dpi_attributes()
 
-    # Some Linux/WSL environments need a Chromium flag for QtWebEngine.
-    os.environ.setdefault(
-        "QTWEBENGINE_CHROMIUM_FLAGS",
-        "--no-sandbox --disable-gpu-sandbox --disable-features=UseOzonePlatform",
-    )
+    # Some Linux/WSL environments need Chromium flags for QtWebEngine to
+    # render at all. On Windows the defaults are fine, and forcing
+    # --disable-gpu-sandbox / UseOzonePlatform off can actively *break*
+    # the embedded browser (chatgpt.com renders as a blank page in some
+    # frozen PyInstaller builds), so only set the flags on Linux.
+    if sys.platform.startswith("linux"):
+        os.environ.setdefault(
+            "QTWEBENGINE_CHROMIUM_FLAGS",
+            "--no-sandbox --disable-gpu-sandbox --disable-features=UseOzonePlatform",
+        )
 
     app = QApplication(argv if argv is not None else sys.argv)
     app.setApplicationName("Aura Desktop")
