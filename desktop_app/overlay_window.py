@@ -377,27 +377,26 @@ class OverlayWindow(QMainWindow):
     def _on_chatgpt_error(self, message: str) -> None:
         """Slot for the ChatGPTBrowser's spontaneous error_occurred signal.
 
-        ChatGPTBrowser emits error_occurred both for request-scoped
-        failures (the bridge couldn't send our screenshot) and for
-        ambient browser issues (the page failed to load while no one
-        was waiting). The shared _show_error path treats every error
-        as a request-scoped failure: it pops a modal dialog and
-        re-enables the answer button. Routing ambient errors through
-        that path would (a) re-enable controls in the middle of an
-        in-flight Gemini request and (b) pop a QMessageBox during the
-        user's exam.
-
-        Forward to _show_error only when there's actually a ChatGPT
-        request in flight; otherwise just nudge the status bar.
+        Even when the bridge times out or fails to read the assistant
+        reply back through the JS API, the embedded browser is sitting
+        on screen below the Answer pane and the user can simply read
+        the response there. Popping a modal QMessageBox in the middle
+        of an exam interrupts the flow for what's effectively a
+        non-fatal hiccup, so ChatGPT errors are now surfaced only via
+        the status bar — never through a modal dialog.
         """
-        # The ChatGPT browser is already on screen alongside the
-        # Answer pane (single-page layout), so we no longer need to
-        # switch tabs when a login is required — the user can simply
-        # log in inside the embedded view that's already visible.
         if self._chatgpt_in_flight:
-            self._show_error(message)
+            # Reset request-scoped state without popping a modal.
+            self._capture_pending = False
+            self._chatgpt_in_flight = False
+            self._stop_chatgpt_watchdog()
+            self._set_answer_controls_enabled(True)
+            self._status_label.setText(
+                f"ChatGPT: {message} \u2014 see the chat below for the answer."
+            )
         else:
-            # Ambient — don't touch request state, don't pop a modal.
+            # Ambient browser issue (page reload error, etc.) — just
+            # nudge the status bar.
             self._status_label.setText(f"ChatGPT: {message}")
 
     def _show_error(self, message: str) -> None:
