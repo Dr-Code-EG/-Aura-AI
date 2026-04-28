@@ -1,4 +1,4 @@
-"""Aura Desktop entry point.
+"""Dr Code (formerly Aura Desktop) entry point.
 
 Wires together: QApplication → :class:`OverlayWindow` → global hotkey.
 """
@@ -45,7 +45,7 @@ def _print_qtwebengine_diagnostics() -> None:
     Writes to stdout (visible in console builds) so the user can paste
     the output if the embedded ChatGPT browser fails to render.
     """
-    print("=== Aura Desktop QtWebEngine diagnostics ===", flush=True)
+    print("=== Dr Code QtWebEngine diagnostics ===", flush=True)
     print(f"sys.frozen      = {getattr(sys, 'frozen', False)}", flush=True)
     meipass = getattr(sys, "_MEIPASS", None)
     print(f"sys._MEIPASS    = {meipass}", flush=True)
@@ -85,8 +85,8 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     app = QApplication(argv if argv is not None else sys.argv)
-    app.setApplicationName("Aura Desktop")
-    app.setOrganizationName("Aura")
+    app.setApplicationName("Dr Code")
+    app.setOrganizationName("Dr Code")
     app.setQuitOnLastWindowClosed(True)
 
     settings = Settings.load()
@@ -113,10 +113,10 @@ def main(argv: list[str] | None = None) -> int:
     if not settings.gemini_api_key and settings.default_provider == "gemini":
         QMessageBox.information(
             window,
-            "Welcome to Aura Desktop",
+            "Welcome to Dr Code",
             "No Gemini API key is configured yet.\n\n"
-            "Open Settings (Ctrl+,) to paste one in, or switch to the "
-            "ChatGPT tab and sign in to use the login-based provider.",
+            "Open Settings (Ctrl+,) to paste one in, or sign in to ChatGPT "
+            "in the embedded browser to use the login-based provider.",
         )
 
     try:

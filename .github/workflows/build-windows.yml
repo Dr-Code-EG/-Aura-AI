@@ -1,6 +1,6 @@
-name: Build Aura Desktop (Windows)
+name: Build Dr Code (Windows)
 
-# Builds a single-folder Windows .exe of the simplified Aura Desktop build
+# Builds a single-folder Windows .exe of the simplified Dr Code build
 # (desktop_app/) on every push to the desktop-app feature branch and on
 # every manual run. The .exe is uploaded as a CI artifact, and (when the
 # workflow is triggered by a tag like v0.1.0) zipped + attached to a
@@ -29,7 +29,7 @@ concurrency:
 
 jobs:
   build:
-    name: Build AuraDesktop.exe
+    name: Build DrCode.exe
     runs-on: windows-latest
     permissions:
       contents: write
@@ -59,41 +59,41 @@ jobs:
       - name: Show build output
         shell: pwsh
         run: |
-          Get-ChildItem -Recurse dist\AuraDesktop | Select-Object -First 30
-          if (-not (Test-Path "dist\AuraDesktop\AuraDesktop.exe")) {
-            throw "AuraDesktop.exe was not produced."
+          Get-ChildItem -Recurse dist\DrCode | Select-Object -First 30
+          if (-not (Test-Path "dist\DrCode\DrCode.exe")) {
+            throw "DrCode.exe was not produced."
           }
 
       - name: Locate QtWebEngine assets and copy to expected paths
         shell: pwsh
         run: |
           # PyInstaller 6.x puts the bundled data files under
-          # dist\AuraDesktop\_internal\, but our runtime hook looks
+          # dist\DrCode\_internal\, but our runtime hook looks
           # for them at <_MEIPASS>\PyQt6\Qt6\... which on a frozen
-          # Windows build maps to dist\AuraDesktop\_internal\PyQt6\Qt6\
+          # Windows build maps to dist\DrCode\_internal\PyQt6\Qt6\
           # at runtime. Search for the QtWebEngineProcess.exe wherever
           # it actually landed and report its real location, then copy
           # the whole Qt6 tree into the expected layout if needed.
-          $found = Get-ChildItem -Path "dist\AuraDesktop" -Recurse -Filter "QtWebEngineProcess.exe" -ErrorAction SilentlyContinue
+          $found = Get-ChildItem -Path "dist\DrCode" -Recurse -Filter "QtWebEngineProcess.exe" -ErrorAction SilentlyContinue
           if (-not $found) {
-            Write-Error "QtWebEngineProcess.exe not found anywhere under dist\AuraDesktop. The embedded ChatGPT browser will not work."
+            Write-Error "QtWebEngineProcess.exe not found anywhere under dist\DrCode. The embedded ChatGPT browser will not work."
             exit 1
           }
           foreach ($f in $found) {
             Write-Host "Found QtWebEngineProcess.exe -> $($f.FullName)"
           }
           # icudtl.dat lives in PyQt6\Qt6\resources\
-          $icu = Get-ChildItem -Path "dist\AuraDesktop" -Recurse -Filter "icudtl.dat" -ErrorAction SilentlyContinue
+          $icu = Get-ChildItem -Path "dist\DrCode" -Recurse -Filter "icudtl.dat" -ErrorAction SilentlyContinue
           if ($icu) {
             foreach ($f in $icu) {
               Write-Host "Found icudtl.dat            -> $($f.FullName)"
             }
           } else {
-            Write-Error "icudtl.dat not found anywhere under dist\AuraDesktop. Chromium will fail to start."
+            Write-Error "icudtl.dat not found anywhere under dist\DrCode. Chromium will fail to start."
             exit 1
           }
           # Locale .pak files live in PyQt6\Qt6\translations\qtwebengine_locales\
-          $loc = Get-ChildItem -Path "dist\AuraDesktop" -Recurse -Directory -Filter "qtwebengine_locales" -ErrorAction SilentlyContinue
+          $loc = Get-ChildItem -Path "dist\DrCode" -Recurse -Directory -Filter "qtwebengine_locales" -ErrorAction SilentlyContinue
           if ($loc) {
             foreach ($d in $loc) {
               Write-Host "Found qtwebengine_locales\  -> $($d.FullName)"
@@ -112,15 +112,15 @@ jobs:
           # Sanitize slashes / spaces — branch names like devin/1234-foo would
           # break Compress-Archive's destination path.
           $version = $rawVersion -replace '[^A-Za-z0-9_.-]', '-'
-          $zip = "AuraDesktop-windows-$($version).zip"
-          Compress-Archive -Path "dist\AuraDesktop\*" -DestinationPath $zip -Force
+          $zip = "DrCode-windows-$($version).zip"
+          Compress-Archive -Path "dist\DrCode\*" -DestinationPath $zip -Force
           "ZIP_NAME=$zip" | Out-File -FilePath $env:GITHUB_ENV -Append
           Write-Host "Built artifact: $zip"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: AuraDesktop-windows
+          name: DrCode-windows
           path: ${{ env.ZIP_NAME }}
           if-no-files-found: error
           retention-days: 30
@@ -145,17 +145,18 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: latest-windows
-          name: "Aura Desktop — latest Windows build"
+          name: "Dr Code — latest Windows build"
           body: |
-            Rolling pre-release with the latest Windows build of Aura Desktop.
+            Rolling pre-release with the latest Windows build of Dr Code.
             Built from `${{ github.ref_name }}` @ `${{ github.sha }}`.
 
             **How to use:**
             1. Download the `.zip` below.
-            2. Unzip anywhere (e.g. `C:\Users\You\AuraDesktop`).
-            3. Double-click `AuraDesktop.exe`.
+            2. Unzip anywhere (e.g. `C:\Users\You\DrCode`).
+            3. Double-click `DrCode.exe`.
             4. Open Settings (Ctrl+,) and paste a Gemini API key, OR
-               switch to the *ChatGPT login* tab and sign in.
+               sign in to ChatGPT in the embedded browser at the
+               bottom of the window.
           prerelease: true
           files: ${{ env.ZIP_NAME }}
           fail_on_unmatched_files: true

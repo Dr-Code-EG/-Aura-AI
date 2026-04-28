@@ -30,7 +30,7 @@ GEMINI_MODELS = [
 class SettingsDialog(QDialog):
     def __init__(self, settings: Settings, parent=None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Aura Desktop — Settings")
+        self.setWindowTitle("Dr Code — Settings")
         self.setModal(True)
         self.resize(520, 460)
         self._settings = settings
@@ -38,7 +38,7 @@ class SettingsDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.addWidget(
             QLabel(
-                "<b>How Aura Desktop works:</b><br>"
+                "<b>How Dr Code works:</b><br>"
                 "Press the <i>Answer</i> button (or your hotkey) and the app "
                 "captures your screen, sends it to the selected AI provider, "
                 "and shows the answer here. Configure the provider below."

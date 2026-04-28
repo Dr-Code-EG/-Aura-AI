@@ -1,4 +1,4 @@
-"""Floating control window — the main UI of Aura Desktop.
+"""Floating control window — the main UI of Dr Code.
 
 Always-on-top, frameless on request. The window is split vertically:
 the Answer button + response area sit on top, and the embedded
@@ -50,7 +50,7 @@ class OverlayWindow(QMainWindow):
         # between the in-flight check and the deferred QTimer fire.
         self._capture_pending = False
 
-        self.setWindowTitle("Aura Desktop")
+        self.setWindowTitle("Dr Code")
         self.resize(QSize(820, 560))
         self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
 
@@ -406,7 +406,7 @@ class OverlayWindow(QMainWindow):
         self._chatgpt_in_flight = False
         self._stop_chatgpt_watchdog()
         self._cleanup_gemini_thread()
-        QMessageBox.warning(self, "Aura Desktop", message)
+        QMessageBox.warning(self, "Dr Code", message)
 
     def _cleanup_gemini_thread(self) -> None:
         """Drop the stored thread reference once the request has finished."""

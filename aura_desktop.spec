@@ -1,6 +1,6 @@
-# PyInstaller spec for building a single-folder Windows .exe of Aura Desktop.
+# PyInstaller spec for building a single-folder Windows .exe of Dr Code.
 # Build with:  pyinstaller aura_desktop.spec
-# Output goes to dist/AuraDesktop/AuraDesktop.exe
+# Output goes to dist/DrCode/DrCode.exe
 
 # -*- mode: python ; coding: utf-8 -*-
 
@@ -55,7 +55,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name='AuraDesktop',
+    name='DrCode',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -76,5 +76,5 @@ coll = COLLECT(
     strip=False,
     upx=False,
     upx_exclude=[],
-    name='AuraDesktop',
+    name='DrCode',
 )
