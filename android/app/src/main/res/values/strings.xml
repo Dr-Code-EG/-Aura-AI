@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Aura AI</string>
+    <string name="chatgpt_title">ChatGPT</string>
+
+    <string name="settings_title">Settings</string>
+    <string name="provider_label">Provider</string>
+    <string name="gemini_label">Gemini</string>
+    <string name="chatgpt_label">ChatGPT (login)</string>
+    <string name="api_key_label">Gemini API key</string>
+    <string name="api_key_hint">Paste your Google AI Studio key</string>
+    <string name="model_label">Gemini model</string>
+    <string name="extra_question_label">Default question</string>
+    <string name="extra_question_hint">e.g. \"Answer the question on the screen.\"</string>
+
+    <string name="open_chatgpt_login">Open ChatGPT login</string>
+    <string name="start_bubble">Start floating button</string>
+    <string name="stop_bubble">Stop floating button</string>
+    <string name="grant_overlay_permission">Allow display over other apps</string>
+    <string name="overlay_permission_required">Floating button needs the \"Display over other apps\" permission. Tap to grant.</string>
+
+    <string name="response_label">Response</string>
+    <string name="response_placeholder">Tap the floating bubble while the question is on screen — the answer will appear here.</string>
+
+    <string name="bubble_notification_channel">Aura floating button</string>
+    <string name="bubble_notification_title">Aura is listening</string>
+    <string name="bubble_notification_body">Tap the floating bubble to answer the question on screen.</string>
+
+    <string name="capture_notification_channel">Screen capture</string>
+    <string name="capture_notification_title">Capturing screen…</string>
+
+    <string name="error_no_api_key">Add a Gemini API key in Settings (or switch the provider to ChatGPT).</string>
+    <string name="error_capture_denied">Screen capture permission was denied.</string>
+    <string name="error_overlay_denied">Overlay permission denied. Enable it in Android Settings.</string>
+    <string name="status_capturing">Capturing screen…</string>
+    <string name="status_asking_gemini">Asking Gemini…</string>
+    <string name="status_done">Done.</string>
+    <string name="status_chatgpt_not_signed_in">Sign in to ChatGPT first (open the ChatGPT tab).</string>
+</resources>

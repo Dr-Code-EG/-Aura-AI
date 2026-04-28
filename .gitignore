@@ -17,3 +17,10 @@ build/
 !aura_desktop.spec
 # AI Provider configuration file with secret keys
 ai_providers.json
+# Android build outputs
+android/app/build/
+android/build/
+android/.gradle/
+android/local.properties
+android/.idea/
+android/captures/
