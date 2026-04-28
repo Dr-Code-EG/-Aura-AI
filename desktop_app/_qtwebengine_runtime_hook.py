@@ -82,14 +82,27 @@ def _configure_qtwebengine_paths() -> None:
 
     # Frozen QtWebEngine bundles typically can't pass Chromium's
     # sandbox path checks on Windows because the helper exe lives
-    # under the PyInstaller temp dir. Disable it explicitly so the
-    # browser renderer process can actually start.
+    # under the PyInstaller temp dir, and they often hit GPU /
+    # rasterizer init failures on bare-metal Windows VMs without
+    # proper graphics drivers. Disable everything that can blow up
+    # the renderer so the browser can at least come up.
     existing_flags = os.environ.get("QTWEBENGINE_CHROMIUM_FLAGS", "")
-    extra_flags = "--no-sandbox --disable-gpu-sandbox"
-    if extra_flags not in existing_flags:
+    extra_flags = (
+        "--no-sandbox "
+        "--disable-gpu-sandbox "
+        "--disable-gpu "
+        "--disable-software-rasterizer "
+        "--disable-dev-shm-usage "
+        "--disable-features=VizDisplayCompositor"
+    )
+    if "--no-sandbox" not in existing_flags:
         os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = (
             f"{existing_flags} {extra_flags}".strip()
         )
+
+    # Some Qt builds also honour this older env var instead of/in
+    # addition to the Chromium flag.
+    os.environ.setdefault("QTWEBENGINE_DISABLE_SANDBOX", "1")
 
 
 _configure_qtwebengine_paths()
