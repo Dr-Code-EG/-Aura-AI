@@ -242,13 +242,12 @@ class OverlayWindow(QMainWindow):
         self._restore_window()
 
         if provider == "chatgpt":
-            if not self._chatgpt.is_ready():
-                self._tabs.setCurrentWidget(self._chatgpt)
-                self._show_error(
-                    "ChatGPT isn't ready yet. Log in via the ChatGPT tab and try "
-                    "again."
-                )
-                return
+            # Don't gate on is_ready() — the injected JS waits up to
+            # 30 s for the editor to mount and emits a structured
+            # AURA_LOGIN_REQUIRED error if it sees a login URL or a
+            # logged-out page. That gives a much better UX than
+            # rejecting the screenshot up front based on a stale
+            # readiness flag (e.g. file-input not yet lazy-mounted).
             self._status_label.setText("Sending screenshot to ChatGPT…")
             self._chatgpt_in_flight = True
             self._start_chatgpt_watchdog()
@@ -382,6 +381,11 @@ class OverlayWindow(QMainWindow):
         Forward to _show_error only when there's actually a ChatGPT
         request in flight; otherwise just nudge the status bar.
         """
+        # If the bridge says "please log in", proactively switch to
+        # the ChatGPT tab so the user can sign in without hunting for
+        # it. This is the common first-run path.
+        if "log in to ChatGPT" in message or "sign in" in message.lower():
+            self._tabs.setCurrentWidget(self._chatgpt)
         if self._chatgpt_in_flight:
             self._show_error(message)
         else:

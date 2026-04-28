@@ -314,16 +314,26 @@ class ChatGPTBrowser(QWidget):
             return
         if value.get("ok"):
             self.final_response.emit(str(value.get("text") or ""))
-        else:
+            return
+        err = str(value.get("error") or "ChatGPT bridge error")
+        # The injected JS uses this sentinel to signal "the page is on
+        # a login URL or the user is signed out" so the host can
+        # surface a more helpful message and switch to the ChatGPT tab.
+        if "AURA_LOGIN_REQUIRED" in err:
             self.error_occurred.emit(
-                str(value.get("error") or "ChatGPT bridge error")
+                "Please log in to ChatGPT \u2014 switching to the ChatGPT tab. "
+                "After signing in, click the Answer button again."
             )
+            return
+        self.error_occurred.emit(err)
 
 
 def _modern_user_agent() -> str:
-    """Use a desktop Chrome-ish UA so ChatGPT serves the regular UI."""
+    """Desktop Chrome UA so ChatGPT serves the regular UI and OAuth
+    providers (Google, Microsoft) don't reject the embedded browser as
+    "insecure"."""
     return (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/124.0.0.0 Safari/537.36"
+        "Chrome/130.0.0.0 Safari/537.36"
     )
