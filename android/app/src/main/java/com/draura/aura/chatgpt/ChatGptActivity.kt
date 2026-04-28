@@ -57,6 +57,7 @@ import com.draura.aura.R
 import com.draura.aura.settings.AuraSettings
 import com.draura.aura.settings.SettingsRepository
 import kotlinx.coroutines.flow.firstOrNull
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Hosts an embedded ChatGPT session.
@@ -87,6 +88,15 @@ class ChatGptActivity : ComponentActivity() {
 
     private val showWebView = mutableStateOf(false)
     private val state: MutableState<UiState> = mutableStateOf(UiState.Idle)
+
+    /**
+     * True from the moment we evaluate the auto-send JS until we hear
+     * back from the bridge (success, error, or login-required). Prevents
+     * a second [WebViewClient.onPageFinished] (e.g. ChatGPT redirecting
+     * client-side from `/` to `/chat`) from kicking off a duplicate
+     * injection while one is already running.
+     */
+    private val autoSendInProgress = AtomicBoolean(false)
 
     sealed class UiState {
         data object Idle : UiState()
@@ -187,8 +197,12 @@ class ChatGptActivity : ComponentActivity() {
             webViewClient = object : WebViewClient() {
                 override fun onPageFinished(view: WebView?, url: String?) {
                     super.onPageFinished(view, url)
-                    // Auto-send hook: as soon as the page is ready and we
-                    // have a pending screenshot, run the bridge.
+                    // Auto-send hook: only fire if a screenshot is
+                    // staged AND we aren't already running the bridge
+                    // for it. The bridge itself handles waiting for
+                    // ChatGPT's React app to finish booting and the
+                    // editor to become visible — we don't gate on that
+                    // here.
                     if (intent.getBooleanExtra(EXTRA_AUTO_SEND, false)
                         && PendingScreenshotHolder.peekBytes() != null
                     ) {
@@ -207,11 +221,17 @@ class ChatGptActivity : ComponentActivity() {
 
     private fun runAutoSend() {
         val wv = webView ?: return
-        val bytes = PendingScreenshotHolder.consumeBytes() ?: return
-        // Pull the user's default question off the settings store. We
-        // do this synchronously off the cached value via runBlocking
-        // semantics — but DataStore is a Flow, so use a background
-        // coroutine and post the JS once we have the value.
+        // Peek (don't consume) so that if the JS bridge bails before
+        // it has actually attached the file to the editor, the bytes
+        // stay staged and the user can retry. The bridge calls
+        // [JsBridge.onAttached] once the file is in the editor, and
+        // that's when we drop the staged copy.
+        val bytes = PendingScreenshotHolder.peekBytes() ?: return
+        if (!autoSendInProgress.compareAndSet(false, true)) {
+            // Another onPageFinished already kicked us off; don't
+            // double-inject.
+            return
+        }
         val question = settingsQuestionBlocking()
         val b64 = Base64.encodeToString(bytes, Base64.NO_WRAP)
         val js = INJECT_JS
@@ -244,19 +264,42 @@ class ChatGptActivity : ComponentActivity() {
             // "Asking ChatGPT…".
         }
 
+        /**
+         * Called by the JS bridge once it has successfully attached
+         * the screenshot file to ChatGPT's editor. From this point on
+         * the bytes are committed to the active conversation and we
+         * drop the staged copy so subsequent taps don't re-send the
+         * same screenshot.
+         */
+        @JavascriptInterface
+        fun onAttached() {
+            PendingScreenshotHolder.consumeBytes()
+        }
+
         @JavascriptInterface
         fun onResponse(text: String) {
-            runOnUiThread { state.value = UiState.Response(text) }
+            runOnUiThread {
+                autoSendInProgress.set(false)
+                state.value = UiState.Response(text)
+            }
         }
 
         @JavascriptInterface
         fun onError(message: String) {
-            runOnUiThread { state.value = UiState.Error(message) }
+            runOnUiThread {
+                autoSendInProgress.set(false)
+                // Bytes stay staged — the Retry button picks them up.
+                state.value = UiState.Error(message)
+            }
         }
 
         @JavascriptInterface
         fun onLoginRequired() {
             runOnUiThread {
+                autoSendInProgress.set(false)
+                // Don't consume bytes — the user will sign in, then
+                // either tap Retry on the dialog (if it's still up) or
+                // re-tap the bubble (which stages new bytes).
                 state.value = UiState.Error(getString(R.string.error_chatgpt_not_signed_in))
                 showWebView.value = true
             }
@@ -297,20 +340,33 @@ class ChatGptActivity : ComponentActivity() {
         }
 
         // Injected JS. Keys to the resilience here:
-        //   - retries to find the editor and Send button (DOM lazy-mounts)
+        //   - waits up to 30s for the editor to mount (slow cold loads,
+        //     Cloudflare challenges, React app booting)
+        //   - retries to find the editor and Send button
         //   - polls assistant message text + "Stop" button to detect when
         //     streaming finishes, then waits 800ms of stability
-        //   - on /login URL, calls onLoginRequired so the activity can
-        //     swap to a visible WebView for the user to sign in.
+        //   - on a /login URL at any point, calls onLoginRequired so the
+        //     activity can swap to a visible WebView for the user to sign
+        //     in (bytes stay staged for retry)
+        //   - calls AuraBridge.onAttached() only after the file is
+        //     actually in the editor — host uses that as the commit
+        //     point for dropping the staged screenshot copy.
         private val INJECT_JS = """
         (async function() {
           try {
-            const url = location.href;
-            if (/\/(auth\/)?login/.test(url) || /\/auth\//.test(url)) {
+            function isLoginUrl(u) {
+              return /\/(auth\/)?login/.test(u)
+                || /\/auth\//.test(u)
+                || /accounts\.google\.com/.test(u)
+                || /login\.live\.com/.test(u)
+                || /\.openai\.com\/auth/.test(u);
+            }
+            if (isLoginUrl(location.href)) {
               AuraBridge.onLoginRequired();
               return;
             }
-            AuraBridge.onProgress('attaching');
+            AuraBridge.onProgress('waiting-for-page');
+
             const b64 = "__B64_PLACEHOLDER__";
             const question = __QUESTION_PLACEHOLDER__;
             const bin = atob(b64);
@@ -335,18 +391,36 @@ class ChatGptActivity : ComponentActivity() {
                 || document.querySelector('button[aria-label*="Stop"]');
             }
 
+            // Wait up to 30s for the editor to mount.
             let editor = findEditor();
-            for (let i = 0; i < 30 && !editor; i++) {
-              await new Promise(r => setTimeout(r, 200));
+            for (let i = 0; i < 60 && !editor; i++) {
+              await new Promise(r => setTimeout(r, 500));
+              if (isLoginUrl(location.href)) {
+                AuraBridge.onLoginRequired();
+                return;
+              }
               editor = findEditor();
             }
-            if (!editor) { AuraBridge.onError('ChatGPT prompt not found.'); return; }
+            if (!editor) {
+              AuraBridge.onError('ChatGPT prompt not found. Open the chat tab and try again.');
+              return;
+            }
+            // Tiny extra settle — ChatGPT sometimes mounts the editor
+            // before its event handlers are attached.
+            await new Promise(r => setTimeout(r, 400));
             editor.focus();
 
+            AuraBridge.onProgress('attaching');
             const dt = new DataTransfer();
             dt.items.add(file);
             editor.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: dt }));
             editor.dispatchEvent(new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData: dt }));
+
+            // The file is in the editor — commit: drop the staged copy
+            // so retaps don't double-send. Past this point a failure
+            // means the screenshot is already submitted to ChatGPT,
+            // even if we can't read the answer back.
+            try { AuraBridge.onAttached(); } catch (_) {}
 
             AuraBridge.onProgress('typing');
             await new Promise(r => setTimeout(r, 1800));
