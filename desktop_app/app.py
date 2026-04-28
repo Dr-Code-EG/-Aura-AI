@@ -39,8 +39,39 @@ def _set_high_dpi_attributes() -> None:
                 pass
 
 
+def _print_qtwebengine_diagnostics() -> None:
+    """Print QtWebEngine bundling diagnostics on startup.
+
+    Writes to stdout (visible in console builds) so the user can paste
+    the output if the embedded ChatGPT browser fails to render.
+    """
+    print("=== Aura Desktop QtWebEngine diagnostics ===", flush=True)
+    print(f"sys.frozen      = {getattr(sys, 'frozen', False)}", flush=True)
+    meipass = getattr(sys, "_MEIPASS", None)
+    print(f"sys._MEIPASS    = {meipass}", flush=True)
+    for var in (
+        "QTWEBENGINEPROCESS_PATH",
+        "QTWEBENGINE_RESOURCES_PATH",
+        "QTWEBENGINE_LOCALES_PATH",
+        "QTWEBENGINE_CHROMIUM_FLAGS",
+    ):
+        print(f"{var:32s} = {os.environ.get(var, '<unset>')}", flush=True)
+    if meipass:
+        for sub in (
+            os.path.join("PyQt6", "Qt6", "bin", "QtWebEngineProcess.exe"),
+            os.path.join("PyQt6", "Qt6", "resources", "icudtl.dat"),
+            os.path.join(
+                "PyQt6", "Qt6", "translations", "qtwebengine_locales"
+            ),
+        ):
+            full = os.path.join(meipass, sub)
+            print(f"  exists({sub}) = {os.path.exists(full)}", flush=True)
+    print("============================================", flush=True)
+
+
 def main(argv: list[str] | None = None) -> int:
     _set_high_dpi_attributes()
+    _print_qtwebengine_diagnostics()
 
     # Some Linux/WSL environments need Chromium flags for QtWebEngine to
     # render at all. On Windows the defaults are fine, and forcing

@@ -41,7 +41,7 @@ a = Analysis(
     ],
     hookspath=[],
     hooksconfig={},
-    runtime_hooks=[],
+    runtime_hooks=['desktop_app/_qtwebengine_runtime_hook.py'],
     excludes=[],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
@@ -63,7 +63,11 @@ exe = EXE(
     # QtWebEngineProcess.exe and the Qt6WebEngineCore DLL has been
     # known to break runtime loading on Windows.
     upx=False,
-    console=False,
+    # Temporarily enable a console window so any Chromium / Qt error
+    # output is visible if the embedded browser fails to render. Once
+    # the QtWebEngine bundling is confirmed working, flip this back
+    # to False for a windowless build.
+    console=True,
     icon=None,
 )
 coll = COLLECT(

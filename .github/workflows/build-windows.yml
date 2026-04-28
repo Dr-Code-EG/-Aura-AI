@@ -64,6 +64,37 @@ jobs:
             throw "AuraDesktop.exe was not produced."
           }
 
+      - name: Verify QtWebEngine bundling
+        shell: pwsh
+        run: |
+          $required = @(
+            "dist\AuraDesktop\PyQt6\Qt6\bin\QtWebEngineProcess.exe",
+            "dist\AuraDesktop\PyQt6\Qt6\resources\icudtl.dat",
+            "dist\AuraDesktop\PyQt6\Qt6\translations\qtwebengine_locales"
+          )
+          $missing = @()
+          foreach ($p in $required) {
+            if (Test-Path $p) {
+              Write-Host "OK  : $p"
+            } else {
+              Write-Host "MISS: $p"
+              $missing += $p
+            }
+          }
+          # Also list the main bin / resources dirs so we can see what
+          # PyInstaller actually put there.
+          if (Test-Path "dist\AuraDesktop\PyQt6\Qt6\bin") {
+            Write-Host "--- PyQt6\Qt6\bin contents:"
+            Get-ChildItem "dist\AuraDesktop\PyQt6\Qt6\bin" -Filter "*WebEngine*"
+          }
+          if (Test-Path "dist\AuraDesktop\PyQt6\Qt6\resources") {
+            Write-Host "--- PyQt6\Qt6\resources contents:"
+            Get-ChildItem "dist\AuraDesktop\PyQt6\Qt6\resources"
+          }
+          if ($missing.Count -gt 0) {
+            Write-Warning "Missing $($missing.Count) QtWebEngine asset(s) - the embedded browser will likely render blank."
+          }
+
       - name: Bundle as zip
         shell: pwsh
         run: |
