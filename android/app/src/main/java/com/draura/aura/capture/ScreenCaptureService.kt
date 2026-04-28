@@ -16,6 +16,7 @@ import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.os.Handler
+import android.os.HandlerThread
 import android.os.IBinder
 import android.os.Looper
 import android.util.DisplayMetrics
@@ -23,46 +24,60 @@ import android.view.WindowManager
 import androidx.core.app.NotificationCompat
 import com.draura.aura.AuraApp
 import com.draura.aura.R
+import com.draura.aura.chatgpt.ChatGptActivity
+import com.draura.aura.chatgpt.PendingScreenshotHolder
 import com.draura.aura.ui.MainActivity
 import java.io.ByteArrayOutputStream
-import java.util.concurrent.atomic.AtomicReference
 
 /**
- * Foreground service that owns the [MediaProjection] token and exposes
- * an in-process API to capture a single screenshot at a time.
+ * One-shot foreground service that owns a [MediaProjection] just long
+ * enough to grab a single screenshot, then stops itself so the system
+ * "Recording screen" indicator goes away.
  *
- * Lifecycle:
- *  1. Activity calls [MediaProjectionManager.createScreenCaptureIntent]
- *     and forwards the result + result code to this service via
- *     [start] which invokes [Context.startForegroundService] with the
- *     intent extras. The service must call [startForeground] before it
- *     can call [MediaProjectionManager.getMediaProjection] (Android
- *     requires the FGS to be started first).
- *  2. While running, the service holds a [VirtualDisplay] reused across
- *     captures.
- *  3. [BubbleService] requests a screenshot via [requestCapture]; the
- *     latest pending [CaptureCallback] receives PNG bytes or an error.
+ * Flow:
+ *  1. CaptureRequestActivity gets MediaProjection consent and starts
+ *     us via startForegroundService with the result code/data extras.
+ *  2. We become a foreground service (required by Android before we
+ *     can call MediaProjectionManager.getMediaProjection).
+ *  3. We open a VirtualDisplay attached to an ImageReader, wait for a
+ *     frame, encode it to PNG, then tear everything down.
+ *  4. We hand the PNG bytes off to [ChatGptActivity] via the in-memory
+ *     [PendingScreenshotHolder] and stopSelf().
  */
 class ScreenCaptureService : Service() {
 
-    private var mediaProjection: MediaProjection? = null
-    private var virtualDisplay: VirtualDisplay? = null
-    private var imageReader: ImageReader? = null
-    private val handler = Handler(Looper.getMainLooper())
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private var captureThread: HandlerThread? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         startForegroundCompat()
-        if (intent != null && intent.hasExtra(EXTRA_RESULT_CODE)) {
-            val resultCode = intent.getIntExtra(EXTRA_RESULT_CODE, 0)
-            val data: Intent? = intent.getParcelableExtra(EXTRA_RESULT_DATA)
-            if (data != null) {
-                setupProjection(resultCode, data)
-            }
+        val data: Intent? = intent?.getParcelableExtra(EXTRA_RESULT_DATA)
+        val resultCode = intent?.getIntExtra(EXTRA_RESULT_CODE, 0) ?: 0
+        if (data == null || resultCode == 0) {
+            stopSelfSafe()
+            return START_NOT_STICKY
         }
-        instance.set(this)
-        return START_STICKY
+        val mgr = getSystemService(MediaProjectionManager::class.java)
+        if (mgr == null) {
+            stopSelfSafe()
+            return START_NOT_STICKY
+        }
+        val projection = mgr.getMediaProjection(resultCode, data)
+        if (projection == null) {
+            stopSelfSafe()
+            return START_NOT_STICKY
+        }
+        // Required on Android 14+ — register a callback before any
+        // virtual display is created.
+        projection.registerCallback(object : MediaProjection.Callback() {
+            override fun onStop() {
+                // No-op, we tear down explicitly in captureOnce.
+            }
+        }, mainHandler)
+        captureOnce(projection)
+        return START_NOT_STICKY
     }
 
     private fun startForegroundCompat() {
@@ -88,22 +103,7 @@ class ScreenCaptureService : Service() {
         }
     }
 
-    private fun setupProjection(resultCode: Int, data: Intent) {
-        val mgr = getSystemService(MediaProjectionManager::class.java)
-        val projection = mgr?.getMediaProjection(resultCode, data) ?: return
-        projection.registerCallback(object : MediaProjection.Callback() {
-            override fun onStop() {
-                releaseProjection()
-                instance.compareAndSet(this@ScreenCaptureService, null)
-                stopSelf()
-            }
-        }, handler)
-        mediaProjection = projection
-    }
-
-    private fun ensureVirtualDisplay(): VirtualDisplay? {
-        val projection = mediaProjection ?: return null
-        if (virtualDisplay != null) return virtualDisplay
+    private fun captureOnce(projection: MediaProjection) {
         val wm = getSystemService(Context.WINDOW_SERVICE) as WindowManager
         val metrics = DisplayMetrics()
         @Suppress("DEPRECATION")
@@ -112,49 +112,101 @@ class ScreenCaptureService : Service() {
         val height = metrics.heightPixels
         val dpi = metrics.densityDpi
 
-        val reader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2)
-        imageReader = reader
+        val thread = HandlerThread("AuraCapture").apply { start() }
+        captureThread = thread
+        val handler = Handler(thread.looper)
 
-        virtualDisplay = projection.createVirtualDisplay(
-            "AuraCapture",
-            width, height, dpi,
-            DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-            reader.surface,
-            null, handler,
-        )
-        return virtualDisplay
+        val reader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2)
+        var virtualDisplay: VirtualDisplay? = null
+
+        // We need to create the VirtualDisplay BEFORE registering an
+        // image listener — otherwise the listener can fire on a thread
+        // that observes a half-initialised state in some emulator
+        // builds.
+        var consumed = false
+        reader.setOnImageAvailableListener({ r ->
+            if (consumed) return@setOnImageAvailableListener
+            val image: Image? = try { r.acquireLatestImage() } catch (_: Throwable) { null }
+            if (image == null) return@setOnImageAvailableListener
+            consumed = true
+            try {
+                val png = imageToPng(image)
+                handOff(png)
+            } catch (t: Throwable) {
+                handOffError(t.message ?: "capture failed")
+            } finally {
+                try { image.close() } catch (_: Throwable) {}
+                tearDown(virtualDisplay, reader, projection)
+            }
+        }, handler)
+
+        try {
+            virtualDisplay = projection.createVirtualDisplay(
+                "AuraCapture",
+                width, height, dpi,
+                DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+                reader.surface,
+                null, handler,
+            )
+        } catch (t: Throwable) {
+            handOffError(t.message ?: "VirtualDisplay failed")
+            tearDown(null, reader, projection)
+            return
+        }
+
+        // Safety: if no frame arrives within 4s, give up. Some devices
+        // (notably old emulators) don't deliver the very first frame.
+        mainHandler.postDelayed({
+            if (!consumed) {
+                consumed = true
+                handOffError("No frame captured in time.")
+                tearDown(virtualDisplay, reader, projection)
+            }
+        }, 4000)
     }
 
-    fun requestCapture(callback: CaptureCallback) {
-        try {
-            val reader = run {
-                ensureVirtualDisplay()
-                imageReader
-            }
-            if (reader == null) {
-                callback.onError("Screen capture not initialized.")
-                return
-            }
-            // Wait for at least one frame, then grab the latest. If we
-            // try to acquire immediately the reader may have nothing.
-            handler.postDelayed({
-                try {
-                    val image = reader.acquireLatestImage()
-                    if (image == null) {
-                        callback.onError("No frame available yet — try again in a moment.")
-                        return@postDelayed
-                    }
-                    image.use { img ->
-                        val png = imageToPng(img)
-                        callback.onResult(png)
-                    }
-                } catch (t: Throwable) {
-                    callback.onError("Capture failed: ${t.message ?: t.javaClass.simpleName}")
-                }
-            }, 250)
-        } catch (t: Throwable) {
-            callback.onError("Capture failed: ${t.message ?: t.javaClass.simpleName}")
+    private fun tearDown(
+        virtualDisplay: VirtualDisplay?,
+        reader: ImageReader,
+        projection: MediaProjection,
+    ) {
+        try { virtualDisplay?.release() } catch (_: Throwable) {}
+        try { reader.close() } catch (_: Throwable) {}
+        try { projection.stop() } catch (_: Throwable) {}
+        stopSelfSafe()
+    }
+
+    private fun handOff(pngBytes: ByteArray) {
+        PendingScreenshotHolder.setBytes(pngBytes)
+        val intent = Intent(this, ChatGptActivity::class.java).apply {
+            addFlags(
+                Intent.FLAG_ACTIVITY_NEW_TASK
+                    or Intent.FLAG_ACTIVITY_SINGLE_TOP
+                    or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT,
+            )
+            putExtra(ChatGptActivity.EXTRA_AUTO_SEND, true)
         }
+        startActivity(intent)
+    }
+
+    private fun handOffError(message: String) {
+        PendingScreenshotHolder.setError(message)
+        val intent = Intent(this, ChatGptActivity::class.java).apply {
+            addFlags(
+                Intent.FLAG_ACTIVITY_NEW_TASK
+                    or Intent.FLAG_ACTIVITY_SINGLE_TOP
+                    or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT,
+            )
+            putExtra(ChatGptActivity.EXTRA_ERROR, message)
+        }
+        startActivity(intent)
+    }
+
+    private fun stopSelfSafe() {
+        try { stopForeground(STOP_FOREGROUND_REMOVE) } catch (_: Throwable) {}
+        captureThread?.quitSafely()
+        captureThread = null
+        stopSelf()
     }
 
     private fun imageToPng(image: Image): ByteArray {
@@ -169,9 +221,11 @@ class ScreenCaptureService : Service() {
             Bitmap.Config.ARGB_8888,
         )
         bitmap.copyPixelsFromBuffer(buffer)
-        // Crop to the actual width to drop padding.
-        val cropped = if (rowPadding == 0) bitmap
-        else Bitmap.createBitmap(bitmap, 0, 0, image.width, image.height)
+        val cropped = if (rowPadding == 0) {
+            bitmap
+        } else {
+            Bitmap.createBitmap(bitmap, 0, 0, image.width, image.height)
+        }
         val out = ByteArrayOutputStream()
         cropped.compress(Bitmap.CompressFormat.PNG, 100, out)
         if (cropped !== bitmap) bitmap.recycle()
@@ -179,48 +233,15 @@ class ScreenCaptureService : Service() {
         return out.toByteArray()
     }
 
-    private fun releaseProjection() {
-        try { virtualDisplay?.release() } catch (_: Throwable) {}
-        try { imageReader?.close() } catch (_: Throwable) {}
-        try { mediaProjection?.stop() } catch (_: Throwable) {}
-        virtualDisplay = null
-        imageReader = null
-        mediaProjection = null
-    }
-
     override fun onDestroy() {
-        releaseProjection()
-        instance.compareAndSet(this, null)
+        captureThread?.quitSafely()
+        captureThread = null
         super.onDestroy()
-    }
-
-    interface CaptureCallback {
-        fun onResult(pngBytes: ByteArray)
-        fun onError(message: String)
     }
 
     companion object {
         const val EXTRA_RESULT_CODE = "result_code"
         const val EXTRA_RESULT_DATA = "result_data"
         private const val NOTIF_ID = 4242
-
-        // The bubble service grabs the running instance to drive captures.
-        // Service-binding would be cleaner but this is simpler and works
-        // because both services live in the same process.
-        private val instance = AtomicReference<ScreenCaptureService?>(null)
-
-        fun current(): ScreenCaptureService? = instance.get()
-
-        fun start(context: Context, resultCode: Int, data: Intent) {
-            val intent = Intent(context, ScreenCaptureService::class.java).apply {
-                putExtra(EXTRA_RESULT_CODE, resultCode)
-                putExtra(EXTRA_RESULT_DATA, data)
-            }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                context.startForegroundService(intent)
-            } else {
-                context.startService(intent)
-            }
-        }
     }
 }

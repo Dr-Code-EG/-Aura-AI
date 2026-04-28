@@ -4,13 +4,12 @@ import android.app.Notification
 import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
-import android.content.res.Configuration
+import android.content.pm.ServiceInfo
 import android.graphics.PixelFormat
 import android.os.Build
 import android.os.IBinder
 import android.util.TypedValue
 import android.view.Gravity
-import android.view.LayoutInflater
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
@@ -20,37 +19,25 @@ import android.widget.ImageView
 import androidx.core.app.NotificationCompat
 import com.draura.aura.AuraApp
 import com.draura.aura.R
-import com.draura.aura.capture.ScreenCaptureService
-import com.draura.aura.gemini.GeminiClient
-import com.draura.aura.settings.AuraSettings
-import com.draura.aura.settings.SettingsRepository
+import com.draura.aura.capture.CaptureRequestActivity
 import com.draura.aura.ui.MainActivity
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
-import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.flow.firstOrNull
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import kotlin.math.abs
 
 /**
- * Foreground service that shows a draggable floating bubble over other
- * apps. Tapping the bubble triggers a screenshot via [ScreenCaptureService]
- * and routes the image to whichever provider the user picked.
+ * Foreground service that draws a small draggable bubble over other
+ * apps. Tapping the bubble triggers a one-shot screenshot via
+ * [CaptureRequestActivity] which then routes through
+ * [com.draura.aura.capture.ScreenCaptureService] and finally into
+ * [com.draura.aura.chatgpt.ChatGptActivity].
  *
- * For ChatGPT mode the bubble currently broadcasts an intent so the host
- * activity can take over (since WebView automation is much easier with a
- * full activity context). Gemini mode runs entirely inside the service.
+ * The bubble service itself does NO screen recording — that's owned
+ * by ScreenCaptureService and only stays alive long enough to grab a
+ * single frame.
  */
 class BubbleService : Service() {
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private lateinit var windowManager: WindowManager
     private var bubbleView: View? = null
-    private var inFlightJob: Job? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -92,7 +79,7 @@ class BubbleService : Service() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
             startForeground(
                 NOTIF_ID, notif,
-                android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE,
             )
         } else {
             startForeground(NOTIF_ID, notif)
@@ -105,14 +92,10 @@ class BubbleService : Service() {
             setImageResource(R.drawable.ic_bubble)
             contentDescription = getString(R.string.app_name)
         }
-        val sizeDp = 56f
         val sizePx = TypedValue.applyDimension(
-            TypedValue.COMPLEX_UNIT_DIP, sizeDp, resources.displayMetrics,
+            TypedValue.COMPLEX_UNIT_DIP, 56f, resources.displayMetrics,
         ).toInt()
-        container.addView(
-            image,
-            FrameLayout.LayoutParams(sizePx, sizePx),
-        )
+        container.addView(image, FrameLayout.LayoutParams(sizePx, sizePx))
 
         val params = WindowManager.LayoutParams(
             ViewGroup.LayoutParams.WRAP_CONTENT,
@@ -133,7 +116,7 @@ class BubbleService : Service() {
         try {
             windowManager.addView(container, params)
             bubbleView = container
-        } catch (t: Throwable) {
+        } catch (_: Throwable) {
             // Most likely SYSTEM_ALERT_WINDOW not granted.
             stopSelf()
         }
@@ -174,92 +157,15 @@ class BubbleService : Service() {
     }
 
     private fun onBubbleTapped() {
-        if (inFlightJob?.isActive == true) return
-        val capture = ScreenCaptureService.current()
-        if (capture == null) {
-            // Need projection permission first — pop the activity to ask.
-            val openIntent = Intent(this, MainActivity::class.java).apply {
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                putExtra(MainActivity.EXTRA_REQUEST_PROJECTION, true)
-            }
-            startActivity(openIntent)
-            return
-        }
-        inFlightJob = scope.launch {
-            val settings = settingsRepo().settingsFlow.firstOrNull() ?: AuraSettings()
-            val pngBytes = withContext(Dispatchers.IO) { captureBlocking(capture) }
-                ?: return@launch
-            when (settings.provider) {
-                AuraSettings.PROVIDER_GEMINI -> handleGemini(pngBytes, settings)
-                AuraSettings.PROVIDER_CHATGPT -> handleChatGptHandoff(pngBytes)
-                else -> handleGemini(pngBytes, settings)
-            }
-        }
-    }
-
-    private suspend fun captureBlocking(capture: ScreenCaptureService): ByteArray? {
-        return withContext(Dispatchers.Main) {
-            kotlinx.coroutines.suspendCancellableCoroutine { cont ->
-                capture.requestCapture(object : ScreenCaptureService.CaptureCallback {
-                    override fun onResult(pngBytes: ByteArray) {
-                        if (cont.isActive) cont.resumeWith(Result.success(pngBytes))
-                    }
-                    override fun onError(message: String) {
-                        AnswerBroadcast.error(this@BubbleService, message)
-                        if (cont.isActive) cont.resumeWith(Result.success(null))
-                    }
-                })
-            }
-        }
-    }
-
-    private suspend fun handleGemini(pngBytes: ByteArray, settings: AuraSettings) {
-        if (settings.geminiApiKey.isBlank()) {
-            AnswerBroadcast.error(this, getString(R.string.error_no_api_key))
-            return
-        }
-        AnswerBroadcast.status(this, getString(R.string.status_asking_gemini))
-        try {
-            val text = GeminiClient().answer(
-                apiKey = settings.geminiApiKey,
-                model = settings.geminiModel,
-                pngBytes = pngBytes,
-                question = settings.extraQuestion.ifBlank {
-                    "Answer the question on the screen."
-                },
-            )
-            AnswerBroadcast.answer(this, text)
-        } catch (t: Throwable) {
-            AnswerBroadcast.error(this, t.message ?: "Gemini request failed.")
-        }
-    }
-
-    private fun handleChatGptHandoff(pngBytes: ByteArray) {
-        // Defer to the ChatGPT activity which owns the WebView. We
-        // store the bytes via a transient holder to avoid serializing
-        // the whole image through an Intent extra.
-        com.draura.aura.chatgpt.PendingScreenshotHolder.set(pngBytes)
-        val intent = Intent(this, com.draura.aura.chatgpt.ChatGptActivity::class.java).apply {
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
-            putExtra(com.draura.aura.chatgpt.ChatGptActivity.EXTRA_AUTO_SEND, true)
-        }
+        val intent = Intent(this, CaptureRequestActivity::class.java)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION)
         startActivity(intent)
     }
-
-    private fun settingsRepo() = SettingsRepository(this)
 
     override fun onDestroy() {
         try { bubbleView?.let { windowManager.removeView(it) } } catch (_: Throwable) {}
         bubbleView = null
-        scope.cancel()
         super.onDestroy()
-    }
-
-    override fun onConfigurationChanged(newConfig: Configuration) {
-        super.onConfigurationChanged(newConfig)
-        // Bubble layout doesn't need to react to rotation explicitly —
-        // we use absolute coordinates. Leaving it in place is the
-        // expected behaviour.
     }
 
     private fun overlayWindowType(): Int =

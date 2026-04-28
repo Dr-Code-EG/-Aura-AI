@@ -6,6 +6,7 @@
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <application
@@ -34,7 +35,16 @@
             android:name=".chatgpt.ChatGptActivity"
             android:exported="false"
             android:label="@string/chatgpt_title"
+            android:launchMode="singleTask"
             android:theme="@style/Theme.AuraAndroid" />
+
+        <activity
+            android:name=".capture.CaptureRequestActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:taskAffinity=""
+            android:theme="@style/Theme.AuraAndroid.Transparent" />
 
         <service
             android:name=".bubble.BubbleService"

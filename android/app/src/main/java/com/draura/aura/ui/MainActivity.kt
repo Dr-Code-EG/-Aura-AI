@@ -1,24 +1,16 @@
 package com.draura.aura.ui
 
 import android.Manifest
-import android.app.Activity
-import android.content.BroadcastReceiver
-import android.content.Context
 import android.content.Intent
-import android.content.IntentFilter
 import android.content.pm.PackageManager
-import android.media.projection.MediaProjectionManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -28,9 +20,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -40,26 +29,17 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.input.PasswordVisualTransformation
-import androidx.compose.ui.unit.dp
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.draura.aura.R
-import com.draura.aura.bubble.AnswerBroadcast
 import com.draura.aura.bubble.BubbleService
-import com.draura.aura.capture.ScreenCaptureService
 import com.draura.aura.chatgpt.ChatGptActivity
 import com.draura.aura.settings.AuraSettings
 import com.draura.aura.settings.SettingsRepository
@@ -68,41 +48,11 @@ import kotlinx.coroutines.launch
 class MainActivity : ComponentActivity() {
 
     private lateinit var settingsRepo: SettingsRepository
-    private lateinit var projectionLauncher: androidx.activity.result.ActivityResultLauncher<Intent>
-    private var pendingActionAfterProjection: (() -> Unit)? = null
-
     private val statusState = mutableStateOf<String?>(null)
-    private val answerState = mutableStateOf<String>("")
-
-    private val answerReceiver = object : BroadcastReceiver() {
-        override fun onReceive(context: Context, intent: Intent) {
-            val text = intent.getStringExtra(AnswerBroadcast.EXTRA_TEXT).orEmpty()
-            when (intent.action) {
-                AnswerBroadcast.ACTION_STATUS -> statusState.value = text
-                AnswerBroadcast.ACTION_ANSWER -> {
-                    statusState.value = getString(R.string.status_done)
-                    answerState.value = text
-                }
-                AnswerBroadcast.ACTION_ERROR -> statusState.value = "Error: $text"
-            }
-        }
-    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         settingsRepo = SettingsRepository(applicationContext)
-
-        projectionLauncher = registerForActivityResult(
-            ActivityResultContracts.StartActivityForResult(),
-        ) { result ->
-            if (result.resultCode == Activity.RESULT_OK && result.data != null) {
-                ScreenCaptureService.start(this, result.resultCode, result.data!!)
-                pendingActionAfterProjection?.invoke()
-                pendingActionAfterProjection = null
-            } else {
-                statusState.value = getString(R.string.error_capture_denied)
-            }
-        }
 
         setContent {
             MaterialTheme {
@@ -111,40 +61,6 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
-
-        if (intent.getBooleanExtra(EXTRA_REQUEST_PROJECTION, false)) {
-            requestProjection { /* nothing extra */ }
-        }
-    }
-
-    override fun onStart() {
-        super.onStart()
-        val filter = IntentFilter().apply {
-            addAction(AnswerBroadcast.ACTION_STATUS)
-            addAction(AnswerBroadcast.ACTION_ANSWER)
-            addAction(AnswerBroadcast.ACTION_ERROR)
-        }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            registerReceiver(answerReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
-        } else {
-            @Suppress("UnspecifiedRegisterReceiverFlag")
-            registerReceiver(answerReceiver, filter)
-        }
-    }
-
-    override fun onStop() {
-        super.onStop()
-        try { unregisterReceiver(answerReceiver) } catch (_: Throwable) {}
-    }
-
-    private fun requestProjection(thenRun: () -> Unit) {
-        pendingActionAfterProjection = thenRun
-        val mgr = getSystemService(MediaProjectionManager::class.java)
-        if (mgr == null) {
-            statusState.value = "Screen capture not available on this device."
-            return
-        }
-        projectionLauncher.launch(mgr.createScreenCaptureIntent())
     }
 
     private fun ensureOverlayPermission(): Boolean {
@@ -157,15 +73,14 @@ class MainActivity : ComponentActivity() {
         return false
     }
 
-    private fun ensureNotificationPermission(): Boolean {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return true
+    private fun ensureNotificationPermission() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
         val granted = ContextCompat.checkSelfPermission(
             this, Manifest.permission.POST_NOTIFICATIONS,
         ) == PackageManager.PERMISSION_GRANTED
         if (!granted) {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), REQ_NOTIF)
         }
-        return granted
     }
 
     private fun startBubble() {
@@ -174,17 +89,11 @@ class MainActivity : ComponentActivity() {
             return
         }
         ensureNotificationPermission()
-        // Bubble needs MediaProjection up first so taps don't bounce
-        // back to the activity for permission every time.
-        if (ScreenCaptureService.current() == null) {
-            requestProjection {
-                val intent = Intent(this, BubbleService::class.java)
-                ContextCompat.startForegroundService(this, intent)
-            }
-        } else {
-            val intent = Intent(this, BubbleService::class.java)
-            ContextCompat.startForegroundService(this, intent)
-        }
+        val intent = Intent(this, BubbleService::class.java)
+        ContextCompat.startForegroundService(this, intent)
+        statusState.value = null
+        // Hide the activity so the bubble is the user's main interaction surface.
+        moveTaskToBack(true)
     }
 
     private fun stopBubble() {
@@ -201,8 +110,8 @@ class MainActivity : ComponentActivity() {
         val settings by settingsRepo.settingsFlow.collectAsStateWithLifecycle(
             initialValue = AuraSettings(),
         )
-        val scroll = rememberScrollState()
         val scope = rememberCoroutineScope()
+        val scroll = rememberScrollState()
 
         Scaffold(
             topBar = { TopAppBar(title = { Text(stringResource(R.string.app_name)) }) },
@@ -217,32 +126,6 @@ class MainActivity : ComponentActivity() {
                 Text(
                     text = stringResource(R.string.settings_title),
                     style = MaterialTheme.typography.titleMedium,
-                )
-
-                ProviderDropdown(settings.provider) { newProvider ->
-                    scope.launch { settingsRepo.update { it.copy(provider = newProvider) } }
-                }
-
-                OutlinedTextField(
-                    value = settings.geminiApiKey,
-                    onValueChange = { v ->
-                        scope.launch { settingsRepo.update { it.copy(geminiApiKey = v) } }
-                    },
-                    label = { Text(stringResource(R.string.api_key_label)) },
-                    placeholder = { Text(stringResource(R.string.api_key_hint)) },
-                    visualTransformation = PasswordVisualTransformation(),
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-
-                OutlinedTextField(
-                    value = settings.geminiModel,
-                    onValueChange = { v ->
-                        scope.launch { settingsRepo.update { it.copy(geminiModel = v) } }
-                    },
-                    label = { Text(stringResource(R.string.model_label)) },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
                 )
 
                 OutlinedTextField(
@@ -285,71 +168,22 @@ class MainActivity : ComponentActivity() {
 
                 Spacer(Modifier.height(8.dp))
                 Text(
-                    text = stringResource(R.string.response_label),
+                    text = "How it works",
                     style = MaterialTheme.typography.titleMedium,
                 )
-                Card(modifier = Modifier.fillMaxWidth()) {
-                    Box(modifier = Modifier.padding(12.dp)) {
-                        if (answerState.value.isBlank()) {
-                            Text(
-                                text = stringResource(R.string.response_placeholder),
-                                style = MaterialTheme.typography.bodyMedium,
-                            )
-                        } else {
-                            Text(
-                                text = answerState.value,
-                                style = MaterialTheme.typography.bodyMedium,
-                            )
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    @Composable
-    private fun ProviderDropdown(
-        current: String,
-        onChange: (String) -> Unit,
-    ) {
-        var expanded by remember { mutableStateOf(false) }
-        val label = when (current) {
-            AuraSettings.PROVIDER_CHATGPT -> stringResource(R.string.chatgpt_label)
-            else -> stringResource(R.string.gemini_label)
-        }
-        Column(modifier = Modifier.fillMaxWidth()) {
-            Text(
-                text = stringResource(R.string.provider_label),
-                style = MaterialTheme.typography.bodySmall,
-            )
-            OutlinedButton(
-                onClick = { expanded = true },
-                modifier = Modifier.fillMaxWidth(),
-            ) { Text(label) }
-            DropdownMenu(
-                expanded = expanded,
-                onDismissRequest = { expanded = false },
-            ) {
-                DropdownMenuItem(
-                    text = { Text(stringResource(R.string.gemini_label)) },
-                    onClick = {
-                        onChange(AuraSettings.PROVIDER_GEMINI)
-                        expanded = false
-                    },
-                )
-                DropdownMenuItem(
-                    text = { Text(stringResource(R.string.chatgpt_label)) },
-                    onClick = {
-                        onChange(AuraSettings.PROVIDER_CHATGPT)
-                        expanded = false
-                    },
+                Text(
+                    text = "1. Tap \"Sign in to ChatGPT\" once to log in (cookies persist).\n" +
+                        "2. Tap \"Start floating button\" — a small bubble appears over other apps.\n" +
+                        "3. Open the question on screen and tap the bubble.\n" +
+                        "4. Android asks for screen-capture permission. After capture the recording stops automatically.\n" +
+                        "5. ChatGPT runs hidden in the background, then a dialog shows the answer.",
+                    style = MaterialTheme.typography.bodyMedium,
                 )
             }
         }
     }
 
     companion object {
-        const val EXTRA_REQUEST_PROJECTION = "request_projection"
         private const val REQ_NOTIF = 9421
     }
 }
