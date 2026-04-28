@@ -87,8 +87,11 @@
   }
 
   // Wait up to `timeoutMs` for the ChatGPT React app to mount its
-  // editor. Returns true if the editor is ready, false on timeout.
-  // Aborts early (returns null) if the page navigates to a login URL.
+  // editor. Returns the editor element on success, `false` on timeout
+  // (the editor genuinely never appeared — likely a DOM change on
+  // ChatGPT's side or a stuck page), and `null` if the page navigated
+  // to a login URL during the wait. The caller distinguishes those
+  // two failure modes so the user gets the right error message.
   async function waitForEditor(timeoutMs) {
     const start = Date.now();
     while (Date.now() - start < timeoutMs) {
@@ -102,7 +105,7 @@
       }
       await sleep(500);
     }
-    return null;
+    return false;
   }
 
   // Try the native file-input route first (most reliable when the

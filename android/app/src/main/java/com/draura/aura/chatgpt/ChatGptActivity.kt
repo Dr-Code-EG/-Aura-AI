@@ -229,9 +229,18 @@ class ChatGptActivity : ComponentActivity() {
             webViewClient = object : WebViewClient() {
                 override fun onPageFinished(view: WebView?, url: String?) {
                     super.onPageFinished(view, url)
+                    // A page navigation (e.g. ChatGPT redirecting / -> /chat,
+                    // a Cloudflare interstitial resolving, or the user
+                    // logging in mid-flight) destroys any JS we previously
+                    // injected, so any in-progress bridge call is now
+                    // dead and its callbacks (onResponse / onError /
+                    // onLoginRequired) can never fire to clear this flag.
+                    // Reset it here so the new injection below isn't
+                    // silently blocked by a permanently-stuck flag from
+                    // the previous, now-invalidated, page.
+                    autoSendInProgress.set(false)
                     // Auto-send hook: only fire if a screenshot is
-                    // staged AND we aren't already running the bridge
-                    // for it. The bridge itself handles waiting for
+                    // staged. The bridge itself handles waiting for
                     // ChatGPT's React app to finish booting and the
                     // editor to become visible — we don't gate on that
                     // here.
