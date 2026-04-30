@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="clock_bezel">#1A1A1D</color>
+    <color name="clock_dial">#F5F1E6</color>
+    <color name="clock_hand">#1A1A1D</color>
+    <color name="clock_second_hand">#C0392B</color>
+</resources>
