@@ -52,10 +52,10 @@ class OverlayWindow(QMainWindow):
         # actual capture starts. Closes the re-entry window between
         # the in-flight check and the deferred QTimer fire.
         self._capture_pending = False
-        # The ChatGPT browser stays mounted in the same window all
-        # the time so its JS bridge keeps running. We just toggle the
-        # bottom splitter pane between "very tall" and "1 px" so the
-        # user only sees the clock unless they opt in.
+        # The ChatGPT browser lives in a separate top-level Qt::Tool
+        # window that is always visible but parked off-screen by
+        # default. Its JS bridge keeps running because the window is
+        # never hidden from Qt's perspective — only repositioned.
         self._showing_browser = False
 
         self.setWindowTitle("Clock")
@@ -196,7 +196,6 @@ class OverlayWindow(QMainWindow):
             if visible
             else Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint
         )
-        was_visible = self._chatgpt_window.isVisible()
         self._chatgpt_window.setWindowFlags(flags)
         if visible:
             # Park the ChatGPT window directly below the clock at a
@@ -209,11 +208,11 @@ class OverlayWindow(QMainWindow):
             # bridge keeps running and the page never hits the
             # visibility-hidden lifecycle.
             self._chatgpt_window.move(-30000, -30000)
-        # setWindowFlags() implicitly hides the window on some
-        # platforms; we MUST keep it shown so Chromium doesn't pause
-        # the page, otherwise the bridge would stop responding.
-        if was_visible or True:
-            self._chatgpt_window.show()
+        # setWindowFlags() implicitly hides the window on every
+        # platform we care about; we must call show() again so
+        # Chromium doesn't pause the page — otherwise the bridge
+        # would stop responding.
+        self._chatgpt_window.show()
 
     # ------------------------------------------------------------------ slots
     def _toggle_always_on_top(self) -> None:
