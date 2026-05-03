@@ -88,17 +88,19 @@ class OverlayWindow(QMainWindow):
         layout.addWidget(self._splitter, stretch=1)
 
         # --- Clock pane (top) ---------------------------------------
-        clock_pane = QWidget()
-        clock_layout = QHBoxLayout(clock_pane)
-        clock_layout.setContentsMargins(0, 0, 0, 0)
+        # The clock widget itself is the entire pane so its painter
+        # uses min(width, height) and the dial fills the available
+        # space. (The previous H-layout with stretches kept the clock
+        # at its tiny size hint no matter how big the window grew.)
+        from PyQt6.QtWidgets import QSizePolicy
         self._clock = ClockWidget(self)
         self._clock.clicked.connect(self.trigger_answer)
         self._clock.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._clock.customContextMenuRequested.connect(self._show_clock_menu)
-        clock_layout.addStretch(1)
-        clock_layout.addWidget(self._clock)
-        clock_layout.addStretch(1)
-        self._splitter.addWidget(clock_pane)
+        self._clock.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
+        self._splitter.addWidget(self._clock)
 
         # --- ChatGPT pane (bottom) ----------------------------------
         # Created once and kept alive forever. Its cookies / login
