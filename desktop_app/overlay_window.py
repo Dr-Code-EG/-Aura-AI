@@ -20,10 +20,8 @@ from typing import Optional
 from PyQt6.QtCore import Qt, QTimer, QSize, QPoint
 from PyQt6.QtGui import QAction, QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
-    QHBoxLayout,
     QMainWindow,
     QMenu,
-    QSplitter,
     QVBoxLayout,
     QWidget,
 )
@@ -71,28 +69,21 @@ class OverlayWindow(QMainWindow):
 
     # ------------------------------------------------------------------ UI
     def _build_ui(self) -> None:
-        # The clock is on top, the embedded ChatGPT browser is on the
-        # bottom of a vertical splitter. The browser is *always* in
-        # the layout (never re-parented or removed) so that its
-        # JavaScript bridge keeps running even when the user has it
-        # collapsed — that's why the answers come back without the
-        # "ChatGPT bridge error" you used to see.
+        # The main window only ever shows the clock. The ChatGPT
+        # browser lives in a separate top-level Qt::Tool window that
+        # is *always* visible at full 800x600 size, just positioned
+        # off-screen by default. That way Chromium renders chatgpt.com
+        # at a real viewport (the editor element is in the DOM, the
+        # JS bridge can find it) and the user never sees the browser
+        # unless they explicitly bring it on-screen via the right-
+        # click menu.
+        from PyQt6.QtWidgets import QSizePolicy
+
         central = QWidget(self)
         self.setCentralWidget(central)
         layout = QVBoxLayout(central)
         layout.setContentsMargins(4, 4, 4, 4)
 
-        self._splitter = QSplitter(Qt.Orientation.Vertical, self)
-        self._splitter.setChildrenCollapsible(False)
-        self._splitter.setHandleWidth(2)
-        layout.addWidget(self._splitter, stretch=1)
-
-        # --- Clock pane (top) ---------------------------------------
-        # The clock widget itself is the entire pane so its painter
-        # uses min(width, height) and the dial fills the available
-        # space. (The previous H-layout with stretches kept the clock
-        # at its tiny size hint no matter how big the window grew.)
-        from PyQt6.QtWidgets import QSizePolicy
         self._clock = ClockWidget(self)
         self._clock.clicked.connect(self.trigger_answer)
         self._clock.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -100,28 +91,36 @@ class OverlayWindow(QMainWindow):
         self._clock.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
         )
-        self._splitter.addWidget(self._clock)
+        layout.addWidget(self._clock, 1)
 
-        # --- ChatGPT pane (bottom) ----------------------------------
-        # Created once and kept alive forever. Its cookies / login
-        # session persist across panel toggles.
+        # --- ChatGPT browser in its own offscreen window -----------
+        self._chatgpt_window = QWidget()
+        # Tool window: no taskbar entry, no Alt-Tab presence — keeps
+        # the disguise even though the window technically exists.
+        self._chatgpt_window.setWindowFlags(
+            Qt.WindowType.Tool
+            | Qt.WindowType.FramelessWindowHint
+        )
+        self._chatgpt_window.setWindowTitle("ChatGPT")
+        chatgpt_layout = QVBoxLayout(self._chatgpt_window)
+        chatgpt_layout.setContentsMargins(0, 0, 0, 0)
+
         self._chatgpt = ChatGPTBrowser()
         self._chatgpt.partial_response.connect(self._show_partial_response)
         self._chatgpt.final_response.connect(self._show_final_response)
         self._chatgpt.error_occurred.connect(self._on_chatgpt_error)
         self._chatgpt.page_ready_changed.connect(self._on_chatgpt_ready)
-        # Allow the splitter to make this pane very small (1 px) so the
-        # browser stays "visible" from Qt's point of view but takes up
-        # essentially no UI space when the user has it hidden.
-        self._chatgpt.setMinimumHeight(1)
-        self._splitter.addWidget(self._chatgpt)
+        chatgpt_layout.addWidget(self._chatgpt, 1)
 
-        # Splitter settings: clock pane stretches, browser pane is the
-        # one we toggle between visible and 1-pixel-tall.
-        self._splitter.setStretchFactor(0, 1)
-        self._splitter.setStretchFactor(1, 0)
-        # Start with the browser collapsed.
-        self._set_browser_panel_visible(False)
+        # Real, full-sized viewport so chatgpt.com lays itself out
+        # the way the inject script expects.
+        self._chatgpt_window.resize(QSize(900, 700))
+
+        # Default: parked off-screen so the user only sees the clock.
+        self._chatgpt_window.move(-30000, -30000)
+        # Always visible to Qt — that's what keeps Chromium from
+        # throttling / suspending the page.
+        self._chatgpt_window.show()
 
     def _wire_shortcuts(self) -> None:
         # Local shortcut still works (the global hotkey is registered
@@ -175,25 +174,46 @@ class OverlayWindow(QMainWindow):
 
         menu.exec(self._clock.mapToGlobal(point))
 
+    def closeEvent(self, event) -> None:  # noqa: N802
+        # The ChatGPT browser is a separate top-level window; close it
+        # too so the app actually exits when the clock is closed.
+        try:
+            self._chatgpt_window.close()
+        except Exception:
+            pass
+        super().closeEvent(event)
+
     def _toggle_browser(self) -> None:
         self._set_browser_panel_visible(not self._showing_browser)
 
     def _set_browser_panel_visible(self, visible: bool) -> None:
         self._showing_browser = visible
+        # Toggle frameless/Tool window decorations so it picks up a
+        # title bar when visible (so the user can move/close it) and
+        # is back to invisible-in-the-corner when hidden.
+        flags = (
+            Qt.WindowType.Tool
+            if visible
+            else Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint
+        )
+        was_visible = self._chatgpt_window.isVisible()
+        self._chatgpt_window.setWindowFlags(flags)
         if visible:
-            # Give the browser pane a real height. If the window is
-            # currently small (clock-only), grow the window first so
-            # the browser actually has somewhere to live.
-            if self.height() < 600:
-                self.resize(max(self.width(), 760), 700)
-            top = max(self._clock.height(), 200)
-            bottom = max(self.height() - top - 16, 360)
-            self._splitter.setSizes([top, bottom])
+            # Park the ChatGPT window directly below the clock at a
+            # readable size.
+            geom = self.geometry()
+            self._chatgpt_window.resize(900, 700)
+            self._chatgpt_window.move(geom.x(), geom.y() + geom.height() + 8)
         else:
-            # Collapse the browser pane to 1 px — invisible to anyone
-            # looking, but Qt still considers it visible so the
-            # JavaScript bridge keeps running and answers come back.
-            self._splitter.setSizes([max(self.height() - 1, 50), 1])
+            # Send it back off-screen. Stays "shown" to Qt so the JS
+            # bridge keeps running and the page never hits the
+            # visibility-hidden lifecycle.
+            self._chatgpt_window.move(-30000, -30000)
+        # setWindowFlags() implicitly hides the window on some
+        # platforms; we MUST keep it shown so Chromium doesn't pause
+        # the page, otherwise the bridge would stop responding.
+        if was_visible or True:
+            self._chatgpt_window.show()
 
     # ------------------------------------------------------------------ slots
     def _toggle_always_on_top(self) -> None:
