@@ -40,6 +40,33 @@ from .settings_store import Settings
 _TITLE_MAX = 240
 
 
+class _ChatGPTWindow(QWidget):
+    """Container for the ChatGPT WebView.
+
+    The whole point of this window is that it must stay visible to Qt
+    *forever* (off-screen when the user has it "hidden", on-screen
+    when revealed) so that Chromium never throttles the page and the
+    JS bridge keeps working. If the user clicks the title-bar X while
+    it's revealed, we intercept the close, hand control back to the
+    parent OverlayWindow so it can re-park us off-screen, and refuse
+    to actually close.
+    """
+
+    def __init__(self, owner: "OverlayWindow") -> None:
+        super().__init__()
+        self._owner = owner
+
+    def closeEvent(self, event) -> None:  # noqa: N802
+        # If the parent is shutting down, accept normally.
+        if getattr(self._owner, "_quitting", False):
+            event.accept()
+            return
+        # Otherwise treat the X button as "Hide ChatGPT panel" so the
+        # window stays alive (Chromium-visible) but moves off-screen.
+        event.ignore()
+        self._owner._set_browser_panel_visible(False)
+
+
 class OverlayWindow(QMainWindow):
     """Always-on-top clock surface."""
 
@@ -52,6 +79,9 @@ class OverlayWindow(QMainWindow):
         # actual capture starts. Closes the re-entry window between
         # the in-flight check and the deferred QTimer fire.
         self._capture_pending = False
+        # Set to True in closeEvent so the ChatGPT tool window's own
+        # closeEvent knows to actually exit instead of re-parking.
+        self._quitting = False
         # The ChatGPT browser lives in a separate top-level Qt::Tool
         # window that is always visible but parked off-screen by
         # default. Its JS bridge keeps running because the window is
@@ -94,7 +124,7 @@ class OverlayWindow(QMainWindow):
         layout.addWidget(self._clock, 1)
 
         # --- ChatGPT browser in its own offscreen window -----------
-        self._chatgpt_window = QWidget()
+        self._chatgpt_window = _ChatGPTWindow(self)
         # Tool window: no taskbar entry, no Alt-Tab presence — keeps
         # the disguise even though the window technically exists.
         self._chatgpt_window.setWindowFlags(
@@ -175,8 +205,10 @@ class OverlayWindow(QMainWindow):
         menu.exec(self._clock.mapToGlobal(point))
 
     def closeEvent(self, event) -> None:  # noqa: N802
-        # The ChatGPT browser is a separate top-level window; close it
-        # too so the app actually exits when the clock is closed.
+        # Tell the ChatGPT tool window's closeEvent override that we
+        # really do want it gone this time, then close it so the app
+        # actually exits.
+        self._quitting = True
         try:
             self._chatgpt_window.close()
         except Exception:
