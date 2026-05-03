@@ -111,6 +111,10 @@ jobs:
           ) && (
             github.ref == 'refs/heads/main' ||
             github.ref == 'refs/heads/master'
+          ) ||
+          (
+            github.event_name == 'pull_request' &&
+            github.event.pull_request.head.repo.full_name == github.repository
           )
         uses: softprops/action-gh-release@v2
         with:
