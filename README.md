@@ -33,10 +33,12 @@ dependencies, no setup.
 3. Unzip anywhere (for example `C:\Users\You\DrCode`).
 4. Double-click **`DrCode.exe`** — a small clock window appears.
 5. **Sign in once.** Right-click the clock face, choose
-   **Sign in**, sign in to ChatGPT (email + password is most
+   **Sign in to ChatGPT**, sign in (email + password is most
    reliable; some third-party providers reject embedded browsers),
-   then right-click again and choose **Hide clock face** to return
-   to the clock.
+   then right-click again and choose **Hide ChatGPT panel** to
+   return to the clock. The ChatGPT browser stays mounted in the
+   same window (collapsed to 1 px) so its JS bridge keeps working
+   while you only see the clock.
 6. Open your exam / question and **left-click the clock face** (or
    press `Ctrl+Shift+A`). The answer appears in the title bar of
    the clock window.

@@ -129,8 +129,10 @@ jobs:
             3. Double-click `DrCode.exe` — a small clock window
                appears.
             4. The first time, **right-click the clock face** and
-               choose **Sign in** to log in to ChatGPT, then
-               right-click again and choose **Hide clock face**.
+               choose **Sign in to ChatGPT** to log in, then
+               right-click again and choose **Hide ChatGPT panel**.
+               The ChatGPT browser stays mounted in the same window
+               (collapsed to 1 px) so its bridge keeps working.
             5. **Left-click the clock face** (or press
                `Ctrl+Shift+A`) while your question is on screen.
                The answer appears in the clock's title bar.
