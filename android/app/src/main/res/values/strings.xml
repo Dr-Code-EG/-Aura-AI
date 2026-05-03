@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Clock</string>
+    <string name="chatgpt_title">Clock</string>
+
+    <string name="settings_title">Calibrate</string>
+    <string name="extra_question_label">Default question</string>
+    <string name="extra_question_hint">e.g. \"Answer the question on the screen.\"</string>
+
+    <string name="open_chatgpt_login">Sign in</string>
+    <string name="start_bubble">Start clock face</string>
+    <string name="stop_bubble">Stop clock face</string>
+    <string name="grant_overlay_permission">Allow display over other apps</string>
+    <string name="overlay_permission_required">The clock face needs the \"Display over other apps\" permission. Tap to grant.</string>
+
+    <string name="bubble_notification_channel">Clock face</string>
+    <string name="bubble_notification_title">Clock</string>
+    <string name="bubble_notification_body">Tap the clock face to ask about what\'s on screen.</string>
+
+    <string name="capture_notification_channel">Capture</string>
+    <string name="capture_notification_title">Reading screen…</string>
+
+    <string name="error_capture_denied">Capture permission was denied.</string>
+    <string name="error_overlay_denied">Overlay permission denied. Enable it in Android Settings.</string>
+    <string name="error_chatgpt_not_signed_in">Tap the clock face → Sign in first.</string>
+    <string name="error_chatgpt_failed">No response — check your connection or sign-in.</string>
+    <string name="status_capturing">Reading screen…</string>
+    <string name="status_asking_chatgpt">Ticking…</string>
+    <string name="status_done">Done.</string>
+
+    <string name="response_label">Answer</string>
+    <string name="dialog_close">Close</string>
+    <string name="dialog_retry">Retry</string>
+    <string name="dialog_copy">Copy</string>
+    <string name="dialog_open_chat">Open clock</string>
+    <string name="dialog_loading">Ticking…</string>
+    <string name="copied_to_clipboard">Copied</string>
+</resources>

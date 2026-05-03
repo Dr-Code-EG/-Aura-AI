@@ -1,0 +1,57 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="64dp"
+    android:height="64dp"
+    android:viewportWidth="64"
+    android:viewportHeight="64">
+
+    <!-- Outer bezel -->
+    <path
+        android:fillColor="#1A1A1D"
+        android:pathData="M32,2 A30,30 0 1,1 31.99,2 Z" />
+
+    <!-- Dial -->
+    <path
+        android:fillColor="#F5F1E6"
+        android:pathData="M32,6 A26,26 0 1,1 31.99,6 Z" />
+
+    <!-- Hour ticks (12 short bars) -->
+    <path
+        android:fillColor="#1A1A1D"
+        android:strokeColor="#1A1A1D"
+        android:strokeWidth="1.6"
+        android:pathData="M32,8 L32,11 M32,53 L32,56 M8,32 L11,32 M53,32 L56,32" />
+    <path
+        android:fillColor="#1A1A1D"
+        android:strokeColor="#1A1A1D"
+        android:strokeWidth="1.2"
+        android:pathData="M44,11 L42.5,13.6 M20,11 L21.5,13.6 M44,53 L42.5,50.4 M20,53 L21.5,50.4 M11,20 L13.6,21.5 M53,20 L50.4,21.5 M11,44 L13.6,42.5 M53,44 L50.4,42.5" />
+
+    <!-- Hour hand: pointing toward 10 (NW-ish) -->
+    <path
+        android:strokeColor="#1A1A1D"
+        android:strokeWidth="3.2"
+        android:strokeLineCap="round"
+        android:pathData="M32,32 L20,22" />
+
+    <!-- Minute hand: pointing toward 2 (NE-ish) -->
+    <path
+        android:strokeColor="#1A1A1D"
+        android:strokeWidth="2.2"
+        android:strokeLineCap="round"
+        android:pathData="M32,32 L46,18" />
+
+    <!-- Second hand: pointing right -->
+    <path
+        android:strokeColor="#C0392B"
+        android:strokeWidth="1.2"
+        android:strokeLineCap="round"
+        android:pathData="M32,32 L52,32" />
+
+    <!-- Center cap -->
+    <path
+        android:fillColor="#1A1A1D"
+        android:pathData="M32,30.5 A1.5,1.5 0 1,1 31.99,30.5 Z" />
+    <path
+        android:fillColor="#C0392B"
+        android:pathData="M32,31.2 A0.8,0.8 0 1,1 31.99,31.2 Z" />
+</vector>
