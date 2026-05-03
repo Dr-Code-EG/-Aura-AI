@@ -43,7 +43,10 @@ class ClockWidget(QWidget):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setMinimumSize(280, 280)
+        # Allow the user to shrink the clock as small as they like.
+        # The painter scales every element off the shorter side so it
+        # stays legible all the way down.
+        self.setMinimumSize(60, 60)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self._timer = QTimer(self)
         self._timer.timeout.connect(self.update)
