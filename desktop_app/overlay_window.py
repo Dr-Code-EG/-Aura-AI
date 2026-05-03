@@ -23,7 +23,7 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QMainWindow,
     QMenu,
-    QStackedWidget,
+    QSplitter,
     QVBoxLayout,
     QWidget,
 )
@@ -54,14 +54,16 @@ class OverlayWindow(QMainWindow):
         # actual capture starts. Closes the re-entry window between
         # the in-flight check and the deferred QTimer fire.
         self._capture_pending = False
-        # When the user wants to log in to ChatGPT they swap the
-        # central widget from the clock to the embedded browser via
-        # the right-click menu. We keep both alive and just toggle
-        # which is shown.
+        # The ChatGPT browser stays mounted in the same window all
+        # the time so its JS bridge keeps running. We just toggle the
+        # bottom splitter pane between "very tall" and "1 px" so the
+        # user only sees the clock unless they opt in.
         self._showing_browser = False
 
         self.setWindowTitle("Clock")
         self.resize(QSize(360, 380))
+        # Window itself can shrink to a small clock-only size.
+        self.setMinimumSize(80, 80)
         self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
 
         self._build_ui()
@@ -69,43 +71,55 @@ class OverlayWindow(QMainWindow):
 
     # ------------------------------------------------------------------ UI
     def _build_ui(self) -> None:
-        # The central widget is a stack: page 0 is the clock face, and
-        # page 1 is the embedded ChatGPT browser used only for the
-        # initial sign-in. By default we only ever show page 0.
+        # The clock is on top, the embedded ChatGPT browser is on the
+        # bottom of a vertical splitter. The browser is *always* in
+        # the layout (never re-parented or removed) so that its
+        # JavaScript bridge keeps running even when the user has it
+        # collapsed — that's why the answers come back without the
+        # "ChatGPT bridge error" you used to see.
         central = QWidget(self)
         self.setCentralWidget(central)
         layout = QVBoxLayout(central)
-        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setContentsMargins(4, 4, 4, 4)
 
-        self._stack = QStackedWidget(self)
-        layout.addWidget(self._stack, stretch=1)
+        self._splitter = QSplitter(Qt.Orientation.Vertical, self)
+        self._splitter.setChildrenCollapsible(False)
+        self._splitter.setHandleWidth(2)
+        layout.addWidget(self._splitter, stretch=1)
 
-        # Page 0 — the clock.
-        clock_page = QWidget()
-        clock_layout = QHBoxLayout(clock_page)
+        # --- Clock pane (top) ---------------------------------------
+        clock_pane = QWidget()
+        clock_layout = QHBoxLayout(clock_pane)
         clock_layout.setContentsMargins(0, 0, 0, 0)
         self._clock = ClockWidget(self)
         self._clock.clicked.connect(self.trigger_answer)
-        # Right-click on the clock opens the hidden control menu.
         self._clock.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._clock.customContextMenuRequested.connect(self._show_clock_menu)
         clock_layout.addStretch(1)
         clock_layout.addWidget(self._clock)
         clock_layout.addStretch(1)
-        self._stack.addWidget(clock_page)
+        self._splitter.addWidget(clock_pane)
 
-        # Page 1 — the embedded ChatGPT browser. Created once so its
-        # cookies / login session persist across page swaps. Never
-        # shown unless the user explicitly chooses "Sign in" from
-        # the clock menu.
+        # --- ChatGPT pane (bottom) ----------------------------------
+        # Created once and kept alive forever. Its cookies / login
+        # session persist across panel toggles.
         self._chatgpt = ChatGPTBrowser()
         self._chatgpt.partial_response.connect(self._show_partial_response)
         self._chatgpt.final_response.connect(self._show_final_response)
         self._chatgpt.error_occurred.connect(self._on_chatgpt_error)
         self._chatgpt.page_ready_changed.connect(self._on_chatgpt_ready)
-        self._stack.addWidget(self._chatgpt)
+        # Allow the splitter to make this pane very small (1 px) so the
+        # browser stays "visible" from Qt's point of view but takes up
+        # essentially no UI space when the user has it hidden.
+        self._chatgpt.setMinimumHeight(1)
+        self._splitter.addWidget(self._chatgpt)
 
-        self._stack.setCurrentIndex(0)
+        # Splitter settings: clock pane stretches, browser pane is the
+        # one we toggle between visible and 1-pixel-tall.
+        self._splitter.setStretchFactor(0, 1)
+        self._splitter.setStretchFactor(1, 0)
+        # Start with the browser collapsed.
+        self._set_browser_panel_visible(False)
 
     def _wire_shortcuts(self) -> None:
         # Local shortcut still works (the global hotkey is registered
@@ -121,12 +135,25 @@ class OverlayWindow(QMainWindow):
     def _show_clock_menu(self, point: QPoint) -> None:
         menu = QMenu(self)
 
-        sign_in = QAction(
-            "Hide clock face" if self._showing_browser else "Sign in",
-            self,
+        # Toggle the bottom ChatGPT panel. The browser is always
+        # mounted; this just expands or collapses its splitter pane.
+        toggle_label = (
+            "Hide ChatGPT panel"
+            if self._showing_browser
+            else "Show ChatGPT panel"
         )
-        sign_in.triggered.connect(self._toggle_browser)
-        menu.addAction(sign_in)
+        toggle = QAction(toggle_label, self)
+        toggle.triggered.connect(self._toggle_browser)
+        menu.addAction(toggle)
+
+        # Same as Show panel, but explicit — the very first time you
+        # need to log in.
+        if not self._showing_browser:
+            sign_in = QAction("Sign in to ChatGPT", self)
+            sign_in.triggered.connect(
+                lambda: self._set_browser_panel_visible(True)
+            )
+            menu.addAction(sign_in)
 
         calibrate = QAction("Calibrate\u2026", self)
         calibrate.triggered.connect(self.open_settings)
@@ -147,15 +174,24 @@ class OverlayWindow(QMainWindow):
         menu.exec(self._clock.mapToGlobal(point))
 
     def _toggle_browser(self) -> None:
-        self._showing_browser = not self._showing_browser
-        self._stack.setCurrentIndex(1 if self._showing_browser else 0)
-        # Resize the window for whichever page is visible. The clock
-        # is small and squarish; the browser needs a real chunk of
-        # space.
-        if self._showing_browser:
-            self.resize(900, 600)
+        self._set_browser_panel_visible(not self._showing_browser)
+
+    def _set_browser_panel_visible(self, visible: bool) -> None:
+        self._showing_browser = visible
+        if visible:
+            # Give the browser pane a real height. If the window is
+            # currently small (clock-only), grow the window first so
+            # the browser actually has somewhere to live.
+            if self.height() < 600:
+                self.resize(max(self.width(), 760), 700)
+            top = max(self._clock.height(), 200)
+            bottom = max(self.height() - top - 16, 360)
+            self._splitter.setSizes([top, bottom])
         else:
-            self.resize(360, 380)
+            # Collapse the browser pane to 1 px — invisible to anyone
+            # looking, but Qt still considers it visible so the
+            # JavaScript bridge keeps running and answers come back.
+            self._splitter.setSizes([max(self.height() - 1, 50), 1])
 
     # ------------------------------------------------------------------ slots
     def _toggle_always_on_top(self) -> None:
