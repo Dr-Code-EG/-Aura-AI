@@ -28,7 +28,7 @@ from PyQt6.QtWidgets import (
 
 from .capture import capture_primary_screen
 from .chatgpt_browser import ChatGPTBrowser
-from .clock_widget import ClockWidget
+from .disguises import DisguiseSpec, all_disguises, find as find_disguise
 from .settings_dialog import SettingsDialog
 from .settings_store import Settings
 
@@ -114,14 +114,15 @@ class OverlayWindow(QMainWindow):
         layout = QVBoxLayout(central)
         layout.setContentsMargins(4, 4, 4, 4)
 
-        self._clock = ClockWidget(self)
-        self._clock.clicked.connect(self.trigger_answer)
-        self._clock.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self._clock.customContextMenuRequested.connect(self._show_clock_menu)
-        self._clock.setSizePolicy(
-            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        # Build the disguise widget the user picked. Falls back to
+        # the analog clock if the saved key is unknown (e.g. after a
+        # downgrade).
+        self._disguise_layout = layout
+        self._disguise: QWidget | None = None
+        self._disguise_spec: DisguiseSpec = find_disguise(
+            getattr(self._settings, "disguise", "analog_clock")
         )
-        layout.addWidget(self._clock, 1)
+        self._mount_disguise(self._disguise_spec)
 
         # --- ChatGPT browser in its own offscreen window -----------
         self._chatgpt_window = _ChatGPTWindow(self)
@@ -151,6 +152,25 @@ class OverlayWindow(QMainWindow):
         # Always visible to Qt — that's what keeps Chromium from
         # throttling / suspending the page.
         self._chatgpt_window.show()
+
+    def _mount_disguise(self, spec: DisguiseSpec) -> None:
+        # Tear down the previous disguise widget if one was mounted.
+        if self._disguise is not None:
+            self._disguise_layout.removeWidget(self._disguise)
+            self._disguise.deleteLater()
+            self._disguise = None
+
+        from PyQt6.QtWidgets import QSizePolicy
+        widget = spec.factory(self)
+        widget.clicked.connect(self.trigger_answer)
+        widget.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        widget.customContextMenuRequested.connect(self._show_clock_menu)
+        widget.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
+        self._disguise_layout.addWidget(widget, 1)
+        self._disguise = widget
+        self._disguise_spec = spec
 
     def _wire_shortcuts(self) -> None:
         # Local shortcut still works (the global hotkey is registered
@@ -202,7 +222,10 @@ class OverlayWindow(QMainWindow):
         quit_act.triggered.connect(self.close)
         menu.addAction(quit_act)
 
-        menu.exec(self._clock.mapToGlobal(point))
+        if self._disguise is not None:
+            menu.exec(self._disguise.mapToGlobal(point))
+        else:
+            menu.exec(self.mapToGlobal(point))
 
     def closeEvent(self, event) -> None:  # noqa: N802
         # Tell the ChatGPT tool window's closeEvent override that we
@@ -260,8 +283,17 @@ class OverlayWindow(QMainWindow):
     def open_settings(self) -> None:
         dlg = SettingsDialog(self._settings, self)
         if dlg.exec() == SettingsDialog.DialogCode.Accepted:
-            self._settings = dlg.updated_settings()
-            self._settings.save()
+            new_settings = dlg.updated_settings()
+            new_settings.save()
+            disguise_changed = (
+                getattr(new_settings, "disguise", "analog_clock")
+                != getattr(self._settings, "disguise", "analog_clock")
+            )
+            self._settings = new_settings
+            if disguise_changed:
+                self._mount_disguise(
+                    find_disguise(self._settings.disguise)
+                )
             if hasattr(self, "settings_changed_callback") and callable(
                 self.settings_changed_callback
             ):
@@ -345,11 +377,29 @@ class OverlayWindow(QMainWindow):
             self.activateWindow()
 
     def _set_title_status(self, text: str) -> None:
-        """Show a short status / answer in place of the window title."""
+        """Push a status string to whichever surface the disguise uses.
+
+        ``"title"`` disguises (e.g. analog clock) replace the window
+        title; ``"label"`` disguises (digital clock, sticky note,
+        \u2026) paint the answer inside themselves; ``"tooltip"``
+        disguises (battery, Wi-Fi, \u2026) keep their visuals
+        untouched and surface the answer only on hover.
+        """
         clean = " ".join(text.split())  # collapse whitespace
         if len(clean) > _TITLE_MAX:
             clean = clean[: _TITLE_MAX - 1] + "\u2026"
-        self.setWindowTitle(clean or "Clock")
+
+        target = self._disguise_spec.answer_target
+        if target == "title":
+            self.setWindowTitle(clean or "Clock")
+        else:
+            # Keep the title bar generic so passers-by still see the
+            # disguise's ambient name.
+            self.setWindowTitle("Clock")
+            if self._disguise is not None and hasattr(
+                self._disguise, "set_answer"
+            ):
+                self._disguise.set_answer(clean)
 
     def _show_partial_response(self, text: str) -> None:
         if not text:

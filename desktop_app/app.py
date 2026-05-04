@@ -11,6 +11,9 @@ import sys
 from PyQt6.QtCore import Qt, QObject, pyqtSignal
 from PyQt6.QtWidgets import QApplication
 
+from .activation_dialog import ActivationDialog
+from .firebase.activation import ActivationResult, ActivationService
+from .firebase.config import HEARTBEAT_SECONDS
 from .hotkey import GlobalHotkey
 from .overlay_window import OverlayWindow
 from .settings_store import Settings
@@ -57,6 +60,45 @@ def main(argv: list[str] | None = None) -> int:
     app.setOrganizationName("Dr Code")
     app.setQuitOnLastWindowClosed(True)
 
+    activation = ActivationService()
+    if activation.is_blocked():
+        from PyQt6.QtWidgets import QMessageBox
+        QMessageBox.critical(
+            None,
+            "Dr Code",
+            "This device has been blocked from running Dr Code. "
+            "Please contact the administrator to unblock it.\n\n"
+            f"Reason: {activation.state.blocked_reason}",
+        )
+        return 1
+    if not activation.is_activated():
+        dialog = ActivationDialog(activation)
+        if dialog.exec() != dialog.DialogCode.Accepted:
+            return 1
+    else:
+        # Re-validate against the server before launching the UI; this
+        # is the user's "always online" requirement. If the server is
+        # unreachable we let the app start (offline grace) but the
+        # heartbeat below will keep retrying.
+        result = activation.heartbeat()
+        if result == ActivationResult.DEVICE_BLOCKED:
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.critical(
+                None,
+                "Dr Code",
+                "This device has been blocked from running Dr Code. "
+                "Please contact the administrator to unblock it.",
+            )
+            return 1
+        if result in (
+            ActivationResult.REVOKED,
+            ActivationResult.USED_BY_OTHER_DEVICE,
+            ActivationResult.INVALID_CODE,
+        ):
+            dialog = ActivationDialog(activation)
+            if dialog.exec() != dialog.DialogCode.Accepted:
+                return 1
+
     settings = Settings.load()
     window = OverlayWindow(settings)
 
@@ -77,11 +119,46 @@ def main(argv: list[str] | None = None) -> int:
 
     window.settings_changed_callback = _on_settings_changed  # type: ignore[attr-defined]
 
+    # Periodic re-check that the activation is still valid. If the
+    # admin revokes the code or blocks the device the running app
+    # closes itself within HEARTBEAT_SECONDS.
+    from PyQt6.QtCore import QTimer
+    from PyQt6.QtWidgets import QMessageBox
+
+    def _heartbeat() -> None:
+        result = activation.heartbeat()
+        if result == ActivationResult.DEVICE_BLOCKED:
+            QMessageBox.critical(
+                window,
+                "Dr Code",
+                "This device has been blocked from running Dr Code. "
+                "The application will now close.",
+            )
+            app.quit()
+        elif result in (
+            ActivationResult.REVOKED,
+            ActivationResult.USED_BY_OTHER_DEVICE,
+            ActivationResult.INVALID_CODE,
+        ):
+            QMessageBox.warning(
+                window,
+                "Dr Code",
+                "Your activation is no longer valid. The application "
+                "will now close.",
+            )
+            app.quit()
+
+    heartbeat_timer = QTimer()
+    heartbeat_timer.setInterval(HEARTBEAT_SECONDS * 1000)
+    heartbeat_timer.timeout.connect(_heartbeat)
+    heartbeat_timer.start()
+
     window.show()
 
     try:
         return app.exec()
     finally:
+        heartbeat_timer.stop()
         _hotkey_holder[0].stop()
 
 

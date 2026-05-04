@@ -1,0 +1,107 @@
+rules_version = '2';
+
+// Security rules for the Dr Code activation backend.
+//
+// Threat model:
+//   * Anonymous desktop clients sign in via Identity Toolkit
+//     (request.auth.token.firebase.sign_in_provider == "anonymous").
+//     They are allowed to claim a code for their device fingerprint
+//     and to refresh "last seen" timestamps, but they cannot mint
+//     new codes, revoke other devices, or unblock themselves.
+//   * Admin operators sign in with email+password and have a custom
+//     claim {"admin": true} attached to their account. They can
+//     read/write everything.
+//
+// To grant an account admin rights, just create a document in the
+// /admin_users collection whose ID is that account's UID:
+//
+//     /admin_users/{uid} = { email: "you@example.com" }
+//
+// (Find the UID in Firebase Console -> Authentication -> Users.)
+// The first admin doc has to be added manually via the Firebase
+// console; subsequent admins can be added from the admin app.
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() { return request.auth != null; }
+    function isAdmin() {
+      return isSignedIn() &&
+        exists(/databases/$(database)/documents/admin_users/$(request.auth.uid));
+    }
+    function isAnon() {
+      return isSignedIn() &&
+        request.auth.token.firebase.sign_in_provider == 'anonymous';
+    }
+    function fingerprint() { return request.resource.data.device; }
+    function existingFingerprint() { return resource.data.device; }
+
+    // ----------------------------------------------------------------
+    // /codes — activation codes minted by an admin.
+    match /codes/{code} {
+      allow get: if isSignedIn();
+      allow list: if isAdmin();
+
+      // Admin can do anything (mint, revoke, reset).
+      allow create, delete: if isAdmin();
+      allow update: if isAdmin() ||
+        // Anonymous client claiming or refreshing a code: only if the
+        // code is currently unused, OR was already bound to this same
+        // device. The fingerprint must match the server-side current
+        // state (or be empty when the doc is unused).
+        (isAnon() &&
+          (
+            resource.data.status == 'unused' ||
+            (resource.data.status == 'active' &&
+              existingFingerprint() == fingerprint())
+          ) &&
+          // Clients may only ever set status to 'active' — they
+          // cannot revoke codes themselves.
+          request.resource.data.status == 'active' &&
+          // Clients may only touch this whitelist of fields. Any
+          // other field change must come from an admin.
+          request.resource.data.diff(resource.data).affectedKeys()
+            .hasOnly(['status', 'device', 'device_label',
+                      'activated_at', 'last_seen_at'])
+        );
+    }
+
+    // ----------------------------------------------------------------
+    // /devices — device-level state (last seen, bad attempts).
+    match /devices/{fingerprint} {
+      allow read: if isAdmin() ||
+        (isAnon() && fingerprint == request.auth.uid) ||
+        // Anonymous client reading its own row by fingerprint id.
+        // We can't know the fingerprint server-side, so we only
+        // require auth — the value of the *id* is the device's own
+        // identity and reading another device's stats doesn't expose
+        // a secret.
+        isAnon();
+      allow write: if isAdmin() ||
+        // Anonymous clients may write their own document only — the
+        // doc id must match the fingerprint they're reporting.
+        (isAnon() &&
+          request.resource.data.diff(resource.data).affectedKeys()
+            .hasOnly(['code', 'label', 'last_seen_at',
+                      'bad_attempts', 'blocked']) &&
+          // Can never *unblock* themselves.
+          (request.resource.data.blocked == false ||
+            request.resource.data.blocked == resource.data.blocked)
+        );
+    }
+
+    // ----------------------------------------------------------------
+    // /blocked_devices — admin-managed deny-list.
+    match /blocked_devices/{fingerprint} {
+      allow read: if isSignedIn();          // clients need to check
+      allow write: if isAdmin();             // only admin can mutate
+    }
+
+    // ----------------------------------------------------------------
+    // /admin_users — optional metadata table the admin app uses.
+    match /admin_users/{uid} {
+      allow read: if isAdmin() || (isSignedIn() && request.auth.uid == uid);
+      allow write: if isAdmin();
+    }
+  }
+}

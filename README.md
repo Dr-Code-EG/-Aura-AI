@@ -1,8 +1,16 @@
 # Dr Code
 
-A small desktop assistant disguised as an analog desk clock. Click
-the clock face while a question is on your screen, and the answer
-appears in the window's title bar a moment later.
+A small desktop assistant disguised as an analog desk clock — or, if
+you prefer, a digital clock, a battery icon, a Wi-Fi indicator, a
+sticky note, a CPU bar, a weather widget, and so on (10 disguises
+in total). Click the disguise while a question is on your screen
+and the answer appears either in the title bar, in a tooltip, or
+on the disguise itself, depending on which one you picked.
+
+Each install requires a per-device **activation code** issued from
+the **Dr Code Admin** Android app. Codes are bound to the first
+device they're used on; admins can mint new codes, revoke them, or
+unblock devices remotely.
 
 ![Dr Code in action](assets/screenshot.jpg)
 
@@ -85,6 +93,44 @@ The frozen build ends up at `dist/DrCode/DrCode.exe`. Distribute the
 whole `dist/DrCode/` folder — the `.exe` needs the bundled
 QtWebEngine runtime files for the hidden ChatGPT session.
 
+## Activation & admin app
+
+The first time you launch Dr Code on a machine you'll be asked for a
+**16-character activation code** in the form `DRCD-XXXX-XXXX-XXXX`.
+After a code is verified once, it's locked to that device — the same
+code on a different machine prompts the user, accepts up to **5**
+wrong-code attempts, and then permanently blocks that device until
+an admin unblocks it.
+
+The desktop client is **always online**: it re-checks every 60
+seconds that the code hasn't been revoked and the device hasn't been
+blocked, and shuts itself down within a minute if either changes.
+
+The companion **Dr Code Admin** Android APK
+(`DrCode-admin-android.apk`) lets you:
+
+- mint new codes (single or in bulk),
+- search the existing codes / devices table,
+- reset a code back to "unused" (so the same code can move to a new
+  PC if the user replaces hardware),
+- revoke a code permanently,
+- block or unblock individual devices.
+
+To set up the admin side once:
+
+1. In the [Firebase Console](https://console.firebase.google.com/)
+   for project **drcode-ai**, enable **Authentication →
+   Email/Password** and create an admin user.
+2. Open **Firestore Database**, create the database, and paste the
+   contents of [`firestore.rules`](firestore.rules) into the
+   **Rules** tab.
+3. Add a document at `admin_users/{your-uid}` (with any small
+   payload, e.g. `{ email: "you@example.com" }`). The `uid` is
+   visible under **Authentication → Users**. Documents in this
+   collection are what the rules use to recognise admin accounts.
+4. Install `DrCode-admin-android.apk`, sign in with the email and
+   password you just created, and start generating codes.
+
 ## Settings
 
 Right-click the clock and choose **Calibrate…** (or press `Ctrl+,`)
@@ -95,6 +141,12 @@ to change:
 - Whether the clock auto-hides while taking the screenshot.
 - The hide-window delay (in milliseconds) before the screenshot is
   taken.
+- **Appearance** — pick one of 10 disguises (analog clock, digital
+  clock, status bar, battery, Wi-Fi, volume mixer, weather card,
+  mini calendar, sticky note, CPU bar). Each disguise has its own
+  best place to display the answer (title bar, tooltip, or inline
+  text), so the surface you pick determines how the answer reaches
+  you.
 
 Settings and the hidden ChatGPT browser profile (cookies, session,
 etc.) live in `~/.drcode/`.

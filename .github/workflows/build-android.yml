@@ -42,30 +42,40 @@ jobs:
       - name: Make gradlew executable
         run: chmod +x android/gradlew
 
-      - name: Build release APK
+      - name: Build release APKs
         working-directory: android
-        run: ./gradlew --no-daemon :app:assembleRelease
+        run: ./gradlew --no-daemon :app:assembleRelease :admin:assembleRelease
 
-      - name: Stage APK
+      - name: Stage APKs
         id: stage
         shell: bash
         run: |
           set -euo pipefail
-          src="android/app/build/outputs/apk/release/app-release.apk"
-          if [ ! -f "$src" ]; then
-            echo "Release APK not found at $src" >&2
-            ls -R android/app/build/outputs || true
-            exit 1
-          fi
-          out="DrCode-android.apk"
-          cp "$src" "$out"
-          echo "apk=$out" >> "$GITHUB_OUTPUT"
+          user_src="android/app/build/outputs/apk/release/app-release.apk"
+          admin_src="android/admin/build/outputs/apk/release/admin-release.apk"
+          for f in "$user_src" "$admin_src"; do
+            if [ ! -f "$f" ]; then
+              echo "APK not found: $f" >&2
+              ls -R android/app/build/outputs android/admin/build/outputs || true
+              exit 1
+            fi
+          done
+          cp "$user_src"  DrCode-android.apk
+          cp "$admin_src" DrCode-admin-android.apk
+          echo "user_apk=DrCode-android.apk"   >> "$GITHUB_OUTPUT"
+          echo "admin_apk=DrCode-admin-android.apk" >> "$GITHUB_OUTPUT"
 
-      - name: Upload artifact
+      - name: Upload user artifact
         uses: actions/upload-artifact@v4
         with:
           name: DrCode-android
-          path: ${{ steps.stage.outputs.apk }}
+          path: ${{ steps.stage.outputs.user_apk }}
+
+      - name: Upload admin artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DrCode-admin-android
+          path: ${{ steps.stage.outputs.admin_apk }}
 
       - name: Publish release
         if: github.event_name != 'pull_request'
@@ -77,13 +87,16 @@ jobs:
           body: |
             Dr Code for Android.
 
-            Install:
-            1. Download `DrCode-android.apk` below.
-            2. Open it on your phone — allow "Install unknown apps" if prompted.
-            3. Open the app, tap **Sign in** once, log in.
-            4. Tap **Start clock face** — a small analog clock floats over other apps.
-            5. Tap the clock to ask about whatever is on screen.
-          files: ${{ steps.stage.outputs.apk }}
+            **User APK** (`DrCode-android.apk`)
+              The clock-disguised assistant. Activation code required.
+
+            **Admin APK** (`DrCode-admin-android.apk`)
+              Sign in with your Firebase Auth admin account to mint
+              activation codes, view registered devices, and
+              block / unblock users.
+          files: |
+            ${{ steps.stage.outputs.user_apk }}
+            ${{ steps.stage.outputs.admin_apk }}
           generate_release_notes: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
