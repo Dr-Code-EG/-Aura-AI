@@ -8,13 +8,13 @@
         android:label="Dr Code Admin"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher_round"
-        android:theme="@style/Theme.Material3.DayNight"
+        android:theme="@style/Theme.DrCodeAdmin"
         android:allowBackup="false"
         android:supportsRtl="true">
         <activity
             android:name=".ui.AdminActivity"
             android:exported="true"
-            android:theme="@style/Theme.Material3.DayNight">
+            android:theme="@style/Theme.DrCodeAdmin">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />

@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Compose handles all theming in code; the manifest only needs
+         a parent theme that doesn't draw a system action bar. -->
+    <style name="Theme.DrCodeAdmin" parent="android:Theme.Material.NoActionBar" />
+</resources>
