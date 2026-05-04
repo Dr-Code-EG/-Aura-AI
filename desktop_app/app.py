@@ -7,10 +7,14 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 
 from PyQt6.QtCore import Qt, QObject, pyqtSignal
 from PyQt6.QtWidgets import QApplication
 
+from .activation_dialog import ActivationDialog
+from .firebase.activation import ActivationResult, ActivationService
+from .firebase.config import HEARTBEAT_SECONDS, ONLINE_GRACE_SECONDS
 from .hotkey import GlobalHotkey
 from .overlay_window import OverlayWindow
 from .settings_store import Settings
@@ -57,6 +61,50 @@ def main(argv: list[str] | None = None) -> int:
     app.setOrganizationName("Dr Code")
     app.setQuitOnLastWindowClosed(True)
 
+    activation = ActivationService()
+    if activation.is_blocked():
+        # Re-check Firestore in case the admin has lifted the block.
+        # ``recheck_block`` clears local state to "unactivated" on
+        # success, so the user can enter a fresh code instead of
+        # being permanently locked out.
+        if activation.recheck_block():
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.critical(
+                None,
+                "Dr Code",
+                "This device has been blocked from running Dr Code. "
+                "Please contact the administrator to unblock it.\n\n"
+                f"Reason: {activation.state.blocked_reason}",
+            )
+            return 1
+    if not activation.is_activated():
+        dialog = ActivationDialog(activation)
+        if dialog.exec() != dialog.DialogCode.Accepted:
+            return 1
+    else:
+        # Re-validate against the server before launching the UI; this
+        # is the user's "always online" requirement. If the server is
+        # unreachable we let the app start (offline grace) but the
+        # heartbeat below will keep retrying.
+        result = activation.heartbeat()
+        if result == ActivationResult.DEVICE_BLOCKED:
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.critical(
+                None,
+                "Dr Code",
+                "This device has been blocked from running Dr Code. "
+                "Please contact the administrator to unblock it.",
+            )
+            return 1
+        if result in (
+            ActivationResult.REVOKED,
+            ActivationResult.USED_BY_OTHER_DEVICE,
+            ActivationResult.INVALID_CODE,
+        ):
+            dialog = ActivationDialog(activation)
+            if dialog.exec() != dialog.DialogCode.Accepted:
+                return 1
+
     settings = Settings.load()
     window = OverlayWindow(settings)
 
@@ -77,11 +125,84 @@ def main(argv: list[str] | None = None) -> int:
 
     window.settings_changed_callback = _on_settings_changed  # type: ignore[attr-defined]
 
+    # Periodic re-check that the activation is still valid. If the
+    # admin revokes the code or blocks the device the running app
+    # closes itself within HEARTBEAT_SECONDS.
+    #
+    # The heartbeat itself makes blocking HTTP calls so we run it on
+    # a QThread worker and react to the result on the main thread.
+    from PyQt6.QtCore import QTimer
+    from PyQt6.QtWidgets import QMessageBox
+
+    from .firebase.worker import ActivationWorker
+
+    _heartbeat_holder: list[ActivationWorker | None] = [None]
+
+    def _on_heartbeat_result(result: str) -> None:
+        if result == ActivationResult.DEVICE_BLOCKED:
+            QMessageBox.critical(
+                window,
+                "Dr Code",
+                "This device has been blocked from running Dr Code. "
+                "The application will now close.",
+            )
+            app.quit()
+            return
+        if result in (
+            ActivationResult.REVOKED,
+            ActivationResult.USED_BY_OTHER_DEVICE,
+            ActivationResult.INVALID_CODE,
+        ):
+            QMessageBox.warning(
+                window,
+                "Dr Code",
+                "Your activation is no longer valid. The application "
+                "will now close.",
+            )
+            app.quit()
+            return
+        if result == ActivationResult.NETWORK:
+            # Always-online enforcement: if we haven't reached the
+            # server in longer than the grace window, shut down.
+            last_ok = activation.state.last_online_check or 0.0
+            if time.time() - last_ok > ONLINE_GRACE_SECONDS:
+                QMessageBox.warning(
+                    window,
+                    "Dr Code",
+                    "Dr Code could not reach the activation server "
+                    f"in the last {ONLINE_GRACE_SECONDS} seconds. "
+                    "Please check your internet connection. "
+                    "The application will now close.",
+                )
+                app.quit()
+
+    def _heartbeat() -> None:
+        # If the previous heartbeat is still running (slow network)
+        # don't pile up a second one.
+        prev = _heartbeat_holder[0]
+        if prev is not None and prev.isRunning():
+            return
+        worker = ActivationWorker(activation.heartbeat)
+        worker.finished_with_result.connect(_on_heartbeat_result)
+        # Unhandled exceptions are treated identically to a NETWORK
+        # result so the same offline-grace logic applies.
+        worker.failed.connect(
+            lambda _exc: _on_heartbeat_result(ActivationResult.NETWORK)
+        )
+        _heartbeat_holder[0] = worker
+        worker.start()
+
+    heartbeat_timer = QTimer()
+    heartbeat_timer.setInterval(HEARTBEAT_SECONDS * 1000)
+    heartbeat_timer.timeout.connect(_heartbeat)
+    heartbeat_timer.start()
+
     window.show()
 
     try:
         return app.exec()
     finally:
+        heartbeat_timer.stop()
         _hotkey_holder[0].stop()
 
 

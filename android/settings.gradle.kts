@@ -15,3 +15,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "DrCodeClock"
 include(":app")
+include(":admin")

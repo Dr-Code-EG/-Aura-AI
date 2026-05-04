@@ -5,6 +5,7 @@ from __future__ import annotations
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QDialog,
     QDialogButtonBox,
     QFormLayout,
@@ -15,6 +16,7 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
 )
 
+from .disguises import all_disguises
 from .settings_store import Settings
 
 
@@ -54,6 +56,17 @@ class SettingsDialog(QDialog):
         self._auto_hide.setChecked(settings.auto_hide_window)
         form.addRow("", self._auto_hide)
 
+        # Disguise picker. The Calibrate dialog only shows the
+        # human-readable label; the registry key is what gets saved.
+        self._disguise = QComboBox()
+        for spec in all_disguises():
+            self._disguise.addItem(spec.label, spec.key)
+        for i in range(self._disguise.count()):
+            if self._disguise.itemData(i) == settings.disguise:
+                self._disguise.setCurrentIndex(i)
+                break
+        form.addRow("Appearance:", self._disguise)
+
         layout.addLayout(form)
 
         layout.addWidget(QLabel("Default question / instructions:"))
@@ -77,4 +90,7 @@ class SettingsDialog(QDialog):
             extra_question=self._question.toPlainText().strip(),
             auto_hide_window=self._auto_hide.isChecked(),
             capture_delay_ms=int(self._delay.value()),
+            disguise=str(
+                self._disguise.currentData() or "analog_clock"
+            ),
         )

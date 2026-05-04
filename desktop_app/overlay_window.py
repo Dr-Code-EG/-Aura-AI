@@ -20,17 +20,15 @@ from typing import Optional
 from PyQt6.QtCore import Qt, QTimer, QSize, QPoint
 from PyQt6.QtGui import QAction, QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
-    QHBoxLayout,
     QMainWindow,
     QMenu,
-    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
 
 from .capture import capture_primary_screen
 from .chatgpt_browser import ChatGPTBrowser
-from .clock_widget import ClockWidget
+from .disguises import DisguiseSpec, all_disguises, find as find_disguise
 from .settings_dialog import SettingsDialog
 from .settings_store import Settings
 
@@ -40,6 +38,33 @@ from .settings_store import Settings
 # this, but we leave the full text in place so the user can hover or
 # resize and see more.
 _TITLE_MAX = 240
+
+
+class _ChatGPTWindow(QWidget):
+    """Container for the ChatGPT WebView.
+
+    The whole point of this window is that it must stay visible to Qt
+    *forever* (off-screen when the user has it "hidden", on-screen
+    when revealed) so that Chromium never throttles the page and the
+    JS bridge keeps working. If the user clicks the title-bar X while
+    it's revealed, we intercept the close, hand control back to the
+    parent OverlayWindow so it can re-park us off-screen, and refuse
+    to actually close.
+    """
+
+    def __init__(self, owner: "OverlayWindow") -> None:
+        super().__init__()
+        self._owner = owner
+
+    def closeEvent(self, event) -> None:  # noqa: N802
+        # If the parent is shutting down, accept normally.
+        if getattr(self._owner, "_quitting", False):
+            event.accept()
+            return
+        # Otherwise treat the X button as "Hide ChatGPT panel" so the
+        # window stays alive (Chromium-visible) but moves off-screen.
+        event.ignore()
+        self._owner._set_browser_panel_visible(False)
 
 
 class OverlayWindow(QMainWindow):
@@ -54,14 +79,19 @@ class OverlayWindow(QMainWindow):
         # actual capture starts. Closes the re-entry window between
         # the in-flight check and the deferred QTimer fire.
         self._capture_pending = False
-        # When the user wants to log in to ChatGPT they swap the
-        # central widget from the clock to the embedded browser via
-        # the right-click menu. We keep both alive and just toggle
-        # which is shown.
+        # Set to True in closeEvent so the ChatGPT tool window's own
+        # closeEvent knows to actually exit instead of re-parking.
+        self._quitting = False
+        # The ChatGPT browser lives in a separate top-level Qt::Tool
+        # window that is always visible but parked off-screen by
+        # default. Its JS bridge keeps running because the window is
+        # never hidden from Qt's perspective — only repositioned.
         self._showing_browser = False
 
         self.setWindowTitle("Clock")
         self.resize(QSize(360, 380))
+        # Window itself can shrink to a small clock-only size.
+        self.setMinimumSize(80, 80)
         self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
 
         self._build_ui()
@@ -69,43 +99,78 @@ class OverlayWindow(QMainWindow):
 
     # ------------------------------------------------------------------ UI
     def _build_ui(self) -> None:
-        # The central widget is a stack: page 0 is the clock face, and
-        # page 1 is the embedded ChatGPT browser used only for the
-        # initial sign-in. By default we only ever show page 0.
+        # The main window only ever shows the clock. The ChatGPT
+        # browser lives in a separate top-level Qt::Tool window that
+        # is *always* visible at full 800x600 size, just positioned
+        # off-screen by default. That way Chromium renders chatgpt.com
+        # at a real viewport (the editor element is in the DOM, the
+        # JS bridge can find it) and the user never sees the browser
+        # unless they explicitly bring it on-screen via the right-
+        # click menu.
+        from PyQt6.QtWidgets import QSizePolicy
+
         central = QWidget(self)
         self.setCentralWidget(central)
         layout = QVBoxLayout(central)
-        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setContentsMargins(4, 4, 4, 4)
 
-        self._stack = QStackedWidget(self)
-        layout.addWidget(self._stack, stretch=1)
+        # Build the disguise widget the user picked. Falls back to
+        # the analog clock if the saved key is unknown (e.g. after a
+        # downgrade).
+        self._disguise_layout = layout
+        self._disguise: QWidget | None = None
+        self._disguise_spec: DisguiseSpec = find_disguise(
+            getattr(self._settings, "disguise", "analog_clock")
+        )
+        self._mount_disguise(self._disguise_spec)
 
-        # Page 0 — the clock.
-        clock_page = QWidget()
-        clock_layout = QHBoxLayout(clock_page)
-        clock_layout.setContentsMargins(0, 0, 0, 0)
-        self._clock = ClockWidget(self)
-        self._clock.clicked.connect(self.trigger_answer)
-        # Right-click on the clock opens the hidden control menu.
-        self._clock.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self._clock.customContextMenuRequested.connect(self._show_clock_menu)
-        clock_layout.addStretch(1)
-        clock_layout.addWidget(self._clock)
-        clock_layout.addStretch(1)
-        self._stack.addWidget(clock_page)
+        # --- ChatGPT browser in its own offscreen window -----------
+        self._chatgpt_window = _ChatGPTWindow(self)
+        # Tool window: no taskbar entry, no Alt-Tab presence — keeps
+        # the disguise even though the window technically exists.
+        self._chatgpt_window.setWindowFlags(
+            Qt.WindowType.Tool
+            | Qt.WindowType.FramelessWindowHint
+        )
+        self._chatgpt_window.setWindowTitle("ChatGPT")
+        chatgpt_layout = QVBoxLayout(self._chatgpt_window)
+        chatgpt_layout.setContentsMargins(0, 0, 0, 0)
 
-        # Page 1 — the embedded ChatGPT browser. Created once so its
-        # cookies / login session persist across page swaps. Never
-        # shown unless the user explicitly chooses "Sign in" from
-        # the clock menu.
         self._chatgpt = ChatGPTBrowser()
         self._chatgpt.partial_response.connect(self._show_partial_response)
         self._chatgpt.final_response.connect(self._show_final_response)
         self._chatgpt.error_occurred.connect(self._on_chatgpt_error)
         self._chatgpt.page_ready_changed.connect(self._on_chatgpt_ready)
-        self._stack.addWidget(self._chatgpt)
+        chatgpt_layout.addWidget(self._chatgpt, 1)
 
-        self._stack.setCurrentIndex(0)
+        # Real, full-sized viewport so chatgpt.com lays itself out
+        # the way the inject script expects.
+        self._chatgpt_window.resize(QSize(900, 700))
+
+        # Default: parked off-screen so the user only sees the clock.
+        self._chatgpt_window.move(-30000, -30000)
+        # Always visible to Qt — that's what keeps Chromium from
+        # throttling / suspending the page.
+        self._chatgpt_window.show()
+
+    def _mount_disguise(self, spec: DisguiseSpec) -> None:
+        # Tear down the previous disguise widget if one was mounted.
+        if self._disguise is not None:
+            self._disguise_layout.removeWidget(self._disguise)
+            self._disguise.deleteLater()
+            self._disguise = None
+
+        from PyQt6.QtWidgets import QSizePolicy
+        widget = spec.factory(self)
+        widget.clicked.connect(self.trigger_answer)
+        widget.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        widget.customContextMenuRequested.connect(self._show_clock_menu)
+        widget.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
+        self._disguise_layout.addWidget(widget, 1)
+        self._disguise = widget
+        self._disguise_spec = spec
 
     def _wire_shortcuts(self) -> None:
         # Local shortcut still works (the global hotkey is registered
@@ -121,12 +186,25 @@ class OverlayWindow(QMainWindow):
     def _show_clock_menu(self, point: QPoint) -> None:
         menu = QMenu(self)
 
-        sign_in = QAction(
-            "Hide clock face" if self._showing_browser else "Sign in",
-            self,
+        # Toggle the bottom ChatGPT panel. The browser is always
+        # mounted; this just expands or collapses its splitter pane.
+        toggle_label = (
+            "Hide ChatGPT panel"
+            if self._showing_browser
+            else "Show ChatGPT panel"
         )
-        sign_in.triggered.connect(self._toggle_browser)
-        menu.addAction(sign_in)
+        toggle = QAction(toggle_label, self)
+        toggle.triggered.connect(self._toggle_browser)
+        menu.addAction(toggle)
+
+        # Same as Show panel, but explicit — the very first time you
+        # need to log in.
+        if not self._showing_browser:
+            sign_in = QAction("Sign in to ChatGPT", self)
+            sign_in.triggered.connect(
+                lambda: self._set_browser_panel_visible(True)
+            )
+            menu.addAction(sign_in)
 
         calibrate = QAction("Calibrate\u2026", self)
         calibrate.triggered.connect(self.open_settings)
@@ -144,18 +222,52 @@ class OverlayWindow(QMainWindow):
         quit_act.triggered.connect(self.close)
         menu.addAction(quit_act)
 
-        menu.exec(self._clock.mapToGlobal(point))
+        if self._disguise is not None:
+            menu.exec(self._disguise.mapToGlobal(point))
+        else:
+            menu.exec(self.mapToGlobal(point))
+
+    def closeEvent(self, event) -> None:  # noqa: N802
+        # Tell the ChatGPT tool window's closeEvent override that we
+        # really do want it gone this time, then close it so the app
+        # actually exits.
+        self._quitting = True
+        try:
+            self._chatgpt_window.close()
+        except Exception:
+            pass
+        super().closeEvent(event)
 
     def _toggle_browser(self) -> None:
-        self._showing_browser = not self._showing_browser
-        self._stack.setCurrentIndex(1 if self._showing_browser else 0)
-        # Resize the window for whichever page is visible. The clock
-        # is small and squarish; the browser needs a real chunk of
-        # space.
-        if self._showing_browser:
-            self.resize(900, 600)
+        self._set_browser_panel_visible(not self._showing_browser)
+
+    def _set_browser_panel_visible(self, visible: bool) -> None:
+        self._showing_browser = visible
+        # Toggle frameless/Tool window decorations so it picks up a
+        # title bar when visible (so the user can move/close it) and
+        # is back to invisible-in-the-corner when hidden.
+        flags = (
+            Qt.WindowType.Tool
+            if visible
+            else Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint
+        )
+        self._chatgpt_window.setWindowFlags(flags)
+        if visible:
+            # Park the ChatGPT window directly below the clock at a
+            # readable size.
+            geom = self.geometry()
+            self._chatgpt_window.resize(900, 700)
+            self._chatgpt_window.move(geom.x(), geom.y() + geom.height() + 8)
         else:
-            self.resize(360, 380)
+            # Send it back off-screen. Stays "shown" to Qt so the JS
+            # bridge keeps running and the page never hits the
+            # visibility-hidden lifecycle.
+            self._chatgpt_window.move(-30000, -30000)
+        # setWindowFlags() implicitly hides the window on every
+        # platform we care about; we must call show() again so
+        # Chromium doesn't pause the page — otherwise the bridge
+        # would stop responding.
+        self._chatgpt_window.show()
 
     # ------------------------------------------------------------------ slots
     def _toggle_always_on_top(self) -> None:
@@ -171,8 +283,17 @@ class OverlayWindow(QMainWindow):
     def open_settings(self) -> None:
         dlg = SettingsDialog(self._settings, self)
         if dlg.exec() == SettingsDialog.DialogCode.Accepted:
-            self._settings = dlg.updated_settings()
-            self._settings.save()
+            new_settings = dlg.updated_settings()
+            new_settings.save()
+            disguise_changed = (
+                getattr(new_settings, "disguise", "analog_clock")
+                != getattr(self._settings, "disguise", "analog_clock")
+            )
+            self._settings = new_settings
+            if disguise_changed:
+                self._mount_disguise(
+                    find_disguise(self._settings.disguise)
+                )
             if hasattr(self, "settings_changed_callback") and callable(
                 self.settings_changed_callback
             ):
@@ -256,11 +377,29 @@ class OverlayWindow(QMainWindow):
             self.activateWindow()
 
     def _set_title_status(self, text: str) -> None:
-        """Show a short status / answer in place of the window title."""
+        """Push a status string to whichever surface the disguise uses.
+
+        ``"title"`` disguises (e.g. analog clock) replace the window
+        title; ``"label"`` disguises (digital clock, sticky note,
+        \u2026) paint the answer inside themselves; ``"tooltip"``
+        disguises (battery, Wi-Fi, \u2026) keep their visuals
+        untouched and surface the answer only on hover.
+        """
         clean = " ".join(text.split())  # collapse whitespace
         if len(clean) > _TITLE_MAX:
             clean = clean[: _TITLE_MAX - 1] + "\u2026"
-        self.setWindowTitle(clean or "Clock")
+
+        target = self._disguise_spec.answer_target
+        if target == "title":
+            self.setWindowTitle(clean or "Clock")
+        else:
+            # Keep the title bar generic so passers-by still see the
+            # disguise's ambient name.
+            self.setWindowTitle("Clock")
+            if self._disguise is not None and hasattr(
+                self._disguise, "set_answer"
+            ):
+                self._disguise.set_answer(clean)
 
     def _show_partial_response(self, text: str) -> None:
         if not text:

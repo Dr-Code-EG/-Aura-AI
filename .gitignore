@@ -22,3 +22,9 @@ Thumbs.db
 # Local config (never commit user secrets / cookies)
 .drcode/
 .env
+
+# Firebase config — values are hardcoded into the build (see
+# desktop_app/firebase/config.py and android/admin/build.gradle.kts);
+# we don't use the google-services Gradle plugin.
+google-services.json
+

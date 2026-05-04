@@ -32,6 +32,10 @@ class Settings:
     )
     auto_hide_window: bool = True
     capture_delay_ms: int = 250
+    # Which disguise the floating window puts on its surface. Must be
+    # one of the registered keys from desktop_app.disguises (e.g.
+    # "analog_clock", "digital_clock", "battery", ...).
+    disguise: str = "analog_clock"
 
     @classmethod
     def load(cls) -> "Settings":
