@@ -35,6 +35,7 @@ from __future__ import annotations
 import datetime as _dt
 import json
 import os
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -125,18 +126,90 @@ class ActivationResult:
 class ActivationService:
     """Talks to Firebase to verify / claim an activation code."""
 
+    # Re-auth this many seconds before the cached idToken expires so
+    # we never hand a stale token to a Firestore call.
+    _TOKEN_REFRESH_SLACK_SECONDS = 5 * 60
+
     def __init__(self) -> None:
         self.state = ActivationState.load()
         self._session: Optional[AuthSession] = None
+        # Epoch second the cached _session.id_token stops being valid.
+        self._session_expires_at: float = 0.0
 
     # ------------------------------------------------------------ helpers
-    def _ensure_session(self) -> AuthSession:
-        if self._session is None:
+    def _ensure_session(self, *, force: bool = False) -> AuthSession:
+        """Return a non-expired anonymous session, refreshing as needed.
+
+        Anonymous Firebase idTokens last ~3600 s. Without proactive
+        refresh the heartbeat would silently start hitting 401 after
+        roughly an hour and stop enforcing activation.
+        """
+        now = time.time()
+        if (
+            force
+            or self._session is None
+            or now >= self._session_expires_at
+        ):
             self._session = sign_in_anonymously()
+            self._session_expires_at = (
+                now + max(60, self._session.expires_in)
+                - self._TOKEN_REFRESH_SLACK_SECONDS
+            )
         return self._session
 
+    def _is_unauthorized(self, exc: FirebaseError) -> bool:
+        # FirebaseError messages start with the HTTP status code, see
+        # rest_client._post_json / _get_json.
+        msg = str(exc)
+        return msg.startswith("401") or msg.startswith("403")
+
+    def _get_doc(self, path: str) -> Optional[dict]:
+        """Get a Firestore doc, transparently re-authing on 401/403."""
+        session = self._ensure_session()
+        try:
+            return get_document(path, id_token=session.id_token)
+        except FirebaseError as e:
+            if not self._is_unauthorized(e):
+                raise
+            session = self._ensure_session(force=True)
+            return get_document(path, id_token=session.id_token)
+
+    def _patch_doc(self, path: str, fields: dict, mask: list[str]) -> None:
+        session = self._ensure_session()
+        try:
+            patch_document(
+                path, fields, id_token=session.id_token, update_mask=mask
+            )
+            return
+        except FirebaseError as e:
+            if not self._is_unauthorized(e):
+                raise
+        session = self._ensure_session(force=True)
+        patch_document(
+            path, fields, id_token=session.id_token, update_mask=mask
+        )
+
     def _normalize_code(self, raw: str) -> str:
-        return "".join(ch for ch in raw.upper() if ch.isalnum())
+        """Canonicalise a user-typed code to ``DRCD-XXXX-XXXX-XXXX``.
+
+        Codes are stored in Firestore with the dashes embedded in the
+        document id, so we must preserve them here. Strip whitespace,
+        upper-case, and re-insert dashes between every 4 alphanumerics
+        if the user typed the code without them.
+        """
+        cleaned = "".join(ch for ch in raw.upper() if ch.isalnum())
+        if not cleaned:
+            return ""
+        # If they already typed DRCDXXXXXXXXXXXX (16 chars), re-insert
+        # the dashes in the canonical positions.
+        if cleaned.startswith("DRCD") and len(cleaned) >= 16:
+            body = cleaned[4:16]
+            return f"DRCD-{body[0:4]}-{body[4:8]}-{body[8:12]}"
+        # Fallback: at least re-insert dashes every 4 chars so the
+        # caller can match a longer/shorter format if you ever change
+        # the code shape later.
+        chunks = [cleaned[i : i + 4] for i in range(0, len(cleaned), 4)]
+        return "-".join(chunks)
 
     # ------------------------------------------------------------ public
     def is_activated(self) -> bool:
@@ -158,10 +231,7 @@ class ActivationService:
             return self._record_bad_attempt(ActivationResult.INVALID_CODE)
 
         try:
-            session = self._ensure_session()
-            doc = get_document(
-                f"{CODES_COLLECTION}/{code}", id_token=session.id_token
-            )
+            doc = self._get_doc(f"{CODES_COLLECTION}/{code}")
         except FirebaseError:
             return ActivationResult.NETWORK
 
@@ -184,7 +254,7 @@ class ActivationService:
 
         # Either unused, or already bound to *this* device. Claim/refresh.
         try:
-            patch_document(
+            self._patch_doc(
                 f"{CODES_COLLECTION}/{code}",
                 {
                     "status": "active",
@@ -193,8 +263,7 @@ class ActivationService:
                     "activated_at": doc.get("activated_at") or _now(),
                     "last_seen_at": _now(),
                 },
-                id_token=session.id_token,
-                update_mask=[
+                [
                     "status",
                     "device",
                     "device_label",
@@ -202,7 +271,7 @@ class ActivationService:
                     "last_seen_at",
                 ],
             )
-            patch_document(
+            self._patch_doc(
                 f"{DEVICES_COLLECTION}/{self.state.fingerprint}",
                 {
                     "code": code,
@@ -211,8 +280,7 @@ class ActivationService:
                     "bad_attempts": 0,
                     "blocked": False,
                 },
-                id_token=session.id_token,
-                update_mask=[
+                [
                     "code",
                     "label",
                     "last_seen_at",
@@ -239,10 +307,8 @@ class ActivationService:
         if not self.is_activated():
             return ActivationResult.INVALID_CODE
         try:
-            session = self._ensure_session()
-            blocked = get_document(
-                f"{BLOCKED_COLLECTION}/{self.state.fingerprint}",
-                id_token=session.id_token,
+            blocked = self._get_doc(
+                f"{BLOCKED_COLLECTION}/{self.state.fingerprint}"
             )
         except FirebaseError:
             return ActivationResult.NETWORK
@@ -255,10 +321,7 @@ class ActivationService:
             return ActivationResult.DEVICE_BLOCKED
 
         try:
-            doc = get_document(
-                f"{CODES_COLLECTION}/{self.state.code}",
-                id_token=session.id_token,
-            )
+            doc = self._get_doc(f"{CODES_COLLECTION}/{self.state.code}")
         except FirebaseError:
             return ActivationResult.NETWORK
         if doc is None:
@@ -279,11 +342,10 @@ class ActivationService:
             return ActivationResult.USED_BY_OTHER_DEVICE
 
         try:
-            patch_document(
+            self._patch_doc(
                 f"{CODES_COLLECTION}/{self.state.code}",
                 {"last_seen_at": _now()},
-                id_token=session.id_token,
-                update_mask=["last_seen_at"],
+                ["last_seen_at"],
             )
         except FirebaseError:
             # Heartbeat write failure shouldn't kick the user out, but
@@ -312,8 +374,7 @@ class ActivationService:
 
     def _mark_blocked_remotely(self, reason: str) -> None:
         try:
-            session = self._ensure_session()
-            patch_document(
+            self._patch_doc(
                 f"{BLOCKED_COLLECTION}/{self.state.fingerprint}",
                 {
                     "blocked": True,
@@ -322,8 +383,7 @@ class ActivationService:
                     "blocked_at": _now(),
                     "bad_attempts": self.state.bad_attempts,
                 },
-                id_token=session.id_token,
-                update_mask=[
+                [
                     "blocked",
                     "reason",
                     "label",
