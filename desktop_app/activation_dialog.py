@@ -24,6 +24,7 @@ from PyQt6.QtWidgets import (
 
 from .firebase.activation import ActivationResult, ActivationService
 from .firebase.config import MAX_BAD_ATTEMPTS
+from .firebase.worker import ActivationWorker
 
 
 _HUMAN_ERRORS = {
@@ -52,6 +53,7 @@ class ActivationDialog(QDialog):
         self.setModal(True)
         self.resize(480, 240)
         self._service = service
+        self._worker: ActivationWorker | None = None
 
         layout = QVBoxLayout(self)
 
@@ -92,6 +94,8 @@ class ActivationDialog(QDialog):
         layout.addLayout(button_row)
 
     def _on_activate(self) -> None:
+        if self._worker is not None and self._worker.isRunning():
+            return  # double-click guard
         raw = self._input.text().strip()
         if not raw:
             self._status.setText("Please enter an activation code.")
@@ -99,12 +103,31 @@ class ActivationDialog(QDialog):
 
         self._activate_btn.setEnabled(False)
         self._activate_btn.setText("Checking…")
+        self._cancel_btn.setEnabled(False)
         self._status.setText("")
 
-        result = self._service.try_activate(raw)
+        # try_activate hits the network synchronously, so run it on a
+        # background thread; otherwise the "Checking…" button text
+        # never gets to repaint and the dialog visibly freezes.
+        self._worker = ActivationWorker(self._service.try_activate, raw)
+        self._worker.finished_with_result.connect(self._on_result)
+        self._worker.failed.connect(self._on_worker_failed)
+        self._worker.start()
 
+    def _restore_buttons(self) -> None:
         self._activate_btn.setEnabled(True)
         self._activate_btn.setText("Activate")
+        self._cancel_btn.setEnabled(True)
+
+    def _on_worker_failed(self, _exc: Exception) -> None:
+        self._restore_buttons()
+        self._status.setText(
+            "Could not reach the activation server. Please check your "
+            "internet connection and try again."
+        )
+
+    def _on_result(self, result: str) -> None:
+        self._restore_buttons()
 
         if result == ActivationResult.OK:
             self.accept()

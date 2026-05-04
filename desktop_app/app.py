@@ -122,11 +122,17 @@ def main(argv: list[str] | None = None) -> int:
     # Periodic re-check that the activation is still valid. If the
     # admin revokes the code or blocks the device the running app
     # closes itself within HEARTBEAT_SECONDS.
+    #
+    # The heartbeat itself makes blocking HTTP calls so we run it on
+    # a QThread worker and react to the result on the main thread.
     from PyQt6.QtCore import QTimer
     from PyQt6.QtWidgets import QMessageBox
 
-    def _heartbeat() -> None:
-        result = activation.heartbeat()
+    from .firebase.worker import ActivationWorker
+
+    _heartbeat_holder: list[ActivationWorker | None] = [None]
+
+    def _on_heartbeat_result(result: str) -> None:
         if result == ActivationResult.DEVICE_BLOCKED:
             QMessageBox.critical(
                 window,
@@ -147,6 +153,18 @@ def main(argv: list[str] | None = None) -> int:
                 "will now close.",
             )
             app.quit()
+
+    def _heartbeat() -> None:
+        # If the previous heartbeat is still running (slow network)
+        # don't pile up a second one.
+        prev = _heartbeat_holder[0]
+        if prev is not None and prev.isRunning():
+            return
+        worker = ActivationWorker(activation.heartbeat)
+        worker.finished_with_result.connect(_on_heartbeat_result)
+        worker.failed.connect(lambda _exc: None)  # treat as transient
+        _heartbeat_holder[0] = worker
+        worker.start()
 
     heartbeat_timer = QTimer()
     heartbeat_timer.setInterval(HEARTBEAT_SECONDS * 1000)
