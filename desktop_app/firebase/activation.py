@@ -151,9 +151,13 @@ class ActivationService:
             or now >= self._session_expires_at
         ):
             self._session = sign_in_anonymously()
-            self._session_expires_at = (
-                now + max(60, self._session.expires_in)
-                - self._TOKEN_REFRESH_SLACK_SECONDS
+            # Apply the slack *inside* the max() so an unusually short
+            # ``expires_in`` (anything <= slack) doesn't push the
+            # expiry into the past, which would force every Firestore
+            # call to re-sign-in and spawn a fresh anonymous user.
+            self._session_expires_at = now + max(
+                60,
+                self._session.expires_in - self._TOKEN_REFRESH_SLACK_SECONDS,
             )
         return self._session
 
@@ -359,6 +363,14 @@ class ActivationService:
             self.state.status = "unactivated"
             self.state.save()
             return ActivationResult.REVOKED
+        if status != "active":
+            # Admin reset the code (status flipped back to "unused").
+            # Treat the same as revoked from the client's perspective:
+            # log out locally and force a fresh activation.
+            self.state.status = "unactivated"
+            self.state.code = ""
+            self.state.save()
+            return ActivationResult.INVALID_CODE
         if bound_device and bound_device != self.state.fingerprint:
             # Someone else stole our code somehow.
             self.state.status = "unactivated"

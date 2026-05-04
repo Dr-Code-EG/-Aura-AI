@@ -7,13 +7,14 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 
 from PyQt6.QtCore import Qt, QObject, pyqtSignal
 from PyQt6.QtWidgets import QApplication
 
 from .activation_dialog import ActivationDialog
 from .firebase.activation import ActivationResult, ActivationService
-from .firebase.config import HEARTBEAT_SECONDS
+from .firebase.config import HEARTBEAT_SECONDS, ONLINE_GRACE_SECONDS
 from .hotkey import GlobalHotkey
 from .overlay_window import OverlayWindow
 from .settings_store import Settings
@@ -146,7 +147,8 @@ def main(argv: list[str] | None = None) -> int:
                 "The application will now close.",
             )
             app.quit()
-        elif result in (
+            return
+        if result in (
             ActivationResult.REVOKED,
             ActivationResult.USED_BY_OTHER_DEVICE,
             ActivationResult.INVALID_CODE,
@@ -158,6 +160,21 @@ def main(argv: list[str] | None = None) -> int:
                 "will now close.",
             )
             app.quit()
+            return
+        if result == ActivationResult.NETWORK:
+            # Always-online enforcement: if we haven't reached the
+            # server in longer than the grace window, shut down.
+            last_ok = activation.state.last_online_check or 0.0
+            if time.time() - last_ok > ONLINE_GRACE_SECONDS:
+                QMessageBox.warning(
+                    window,
+                    "Dr Code",
+                    "Dr Code could not reach the activation server "
+                    f"in the last {ONLINE_GRACE_SECONDS} seconds. "
+                    "Please check your internet connection. "
+                    "The application will now close.",
+                )
+                app.quit()
 
     def _heartbeat() -> None:
         # If the previous heartbeat is still running (slow network)
@@ -167,7 +184,11 @@ def main(argv: list[str] | None = None) -> int:
             return
         worker = ActivationWorker(activation.heartbeat)
         worker.finished_with_result.connect(_on_heartbeat_result)
-        worker.failed.connect(lambda _exc: None)  # treat as transient
+        # Unhandled exceptions are treated identically to a NETWORK
+        # result so the same offline-grace logic applies.
+        worker.failed.connect(
+            lambda _exc: _on_heartbeat_result(ActivationResult.NETWORK)
+        )
         _heartbeat_holder[0] = worker
         worker.start()
 
