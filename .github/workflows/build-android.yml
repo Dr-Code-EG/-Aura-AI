@@ -78,7 +78,9 @@ jobs:
           path: ${{ steps.stage.outputs.admin_apk }}
 
       - name: Publish release
-        if: github.event_name != 'pull_request'
+        if: |
+          github.event_name != 'pull_request' ||
+          github.event.pull_request.head.repo.full_name == github.repository
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'latest-android' }}
