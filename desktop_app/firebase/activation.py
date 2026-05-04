@@ -218,6 +218,30 @@ class ActivationService:
     def is_blocked(self) -> bool:
         return self.state.status == "blocked"
 
+    def recheck_block(self) -> bool:
+        """Re-query Firestore to see if the admin has cleared the block.
+
+        Returns ``True`` if the device is *still* blocked, ``False`` if
+        the admin has lifted the block (in which case the local state
+        is reset to ``unactivated`` so the user can enter a new code).
+        Network failures keep the local block in place so a
+        disconnected device cannot bypass the lock.
+        """
+        try:
+            doc = self._get_doc(
+                f"{BLOCKED_COLLECTION}/{self.state.fingerprint}"
+            )
+        except FirebaseError:
+            return True
+        if doc is None or not doc.get("blocked"):
+            self.state.status = "unactivated"
+            self.state.code = ""
+            self.state.bad_attempts = 0
+            self.state.blocked_reason = ""
+            self.state.save()
+            return False
+        return True
+
     def try_activate(self, raw_code: str) -> str:
         """Attempt to claim ``raw_code`` for this device.
 

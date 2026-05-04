@@ -109,15 +109,19 @@ class AdminRepository(
 
     suspend fun unblockDevice(fingerprint: String) =
         withContext(Dispatchers.IO) {
-            firebase.patchDocument(
-                path = "blocked_devices/$fingerprint",
-                fields = mapOf(
-                    "blocked" to false,
-                    "reason" to "",
-                ),
-                idToken = token(),
-                updateMask = listOf("blocked", "reason"),
-            )
+            // Delete the blocked_devices doc instead of patching it
+            // to blocked=false. Firestore rules only let anonymous
+            // clients *create* /blocked_devices/{fp}; if a stale doc
+            // is left lying around, a future self-block from the
+            // desktop client (after MAX_BAD_ATTEMPTS) would be a
+            // disallowed update and the dashboard would silently
+            // miss the re-block.
+            runCatching {
+                firebase.deleteDocument(
+                    path = "blocked_devices/$fingerprint",
+                    idToken = token(),
+                )
+            }
             // Also reset the device's bad-attempts counter so the
             // user gets a clean slate on their next launch.
             firebase.patchDocument(

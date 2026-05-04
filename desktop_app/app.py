@@ -62,15 +62,20 @@ def main(argv: list[str] | None = None) -> int:
 
     activation = ActivationService()
     if activation.is_blocked():
-        from PyQt6.QtWidgets import QMessageBox
-        QMessageBox.critical(
-            None,
-            "Dr Code",
-            "This device has been blocked from running Dr Code. "
-            "Please contact the administrator to unblock it.\n\n"
-            f"Reason: {activation.state.blocked_reason}",
-        )
-        return 1
+        # Re-check Firestore in case the admin has lifted the block.
+        # ``recheck_block`` clears local state to "unactivated" on
+        # success, so the user can enter a fresh code instead of
+        # being permanently locked out.
+        if activation.recheck_block():
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.critical(
+                None,
+                "Dr Code",
+                "This device has been blocked from running Dr Code. "
+                "Please contact the administrator to unblock it.\n\n"
+                f"Reason: {activation.state.blocked_reason}",
+            )
+            return 1
     if not activation.is_activated():
         dialog = ActivationDialog(activation)
         if dialog.exec() != dialog.DialogCode.Accepted:

@@ -69,7 +69,12 @@ service cloud.firestore {
     // ----------------------------------------------------------------
     // /devices — device-level state (last seen, bad attempts).
     match /devices/{fingerprint} {
-      allow read: if isAdmin() || isAnon();
+      // Anonymous clients only ever query their *own* row by id, so
+      // they need `get` but never `list`. Granting `list` would let
+      // any anonymous account enumerate every device fingerprint and
+      // then create matching `blocked_devices` entries (DoS).
+      allow get: if isAdmin() || isAnon();
+      allow list: if isAdmin();
 
       // Create: first-time activation. Doc didn't exist, so we cannot
       // diff against `resource`. Just whitelist the keys and refuse
@@ -100,7 +105,8 @@ service cloud.firestore {
     // ----------------------------------------------------------------
     // /blocked_devices — admin-managed deny-list.
     match /blocked_devices/{fingerprint} {
-      allow read: if isSignedIn();          // clients need to check
+      allow get: if isSignedIn();            // clients check own row
+      allow list: if isAdmin();              // no enumeration for anon
 
       // Anonymous clients may flag *themselves* as blocked when they
       // hit MAX_BAD_ATTEMPTS so the admin sees the device in the
